@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# TenderBase API — local development stack.
+#   docker compose up --build
+#   docker compose run --rm api migrate
+# Secrets are read from the environment / .env file; nothing is hard-coded
+# except non-secret local development defaults.
+# ---------------------------------------------------------------------------
+name: tenderbase
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tenderbase}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tenderbase}
+      POSTGRES_DB: ${POSTGRES_DB:-tenderbase}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tenderbase} -d ${POSTGRES_DB:-tenderbase}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["api"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DEBUG: ${DEBUG:-true}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tenderbase}:${POSTGRES_PASSWORD:-tenderbase}@postgres:5432/${POSTGRES_DB:-tenderbase}
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS_ON_START: "true"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_PATH: /srv/tenderbase/var/documents
+    volumes:
+      - document-store:/srv/tenderbase/var/documents
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["worker"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tenderbase}:${POSTGRES_PASSWORD:-tenderbase}@postgres:5432/${POSTGRES_DB:-tenderbase}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_PATH: /srv/tenderbase/var/documents
+    volumes:
+      - document-store:/srv/tenderbase/var/documents
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  document-store:

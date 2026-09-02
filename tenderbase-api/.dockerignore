@@ -1,0 +1,21 @@
+# Build context excludes — keep the image small and secret-free.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.env
+.env.*
+!.env.example
+tests
+docs
+var
+data/*.sqlite3
+*.sqlite3
+htmlcov
+.coverage

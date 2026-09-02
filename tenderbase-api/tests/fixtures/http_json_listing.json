@@ -1,0 +1,30 @@
+{
+  "_comment": "TEST FIXTURE — synthetic JSON listing for the generic HTTP connector.",
+  "meta": { "page": 1, "total": 2 },
+  "data": {
+    "items": [
+      {
+        "id": "FIX-JSON-001",
+        "referenceNumber": "FIXTURE/JSON/2026/001",
+        "title": "TEST FIXTURE: Provision of security services",
+        "summary": "TEST FIXTURE. Provision of physical security services at municipal buildings.",
+        "datePublished": "2026-09-01",
+        "closingDate": "2026-09-18T11:00:00+02:00",
+        "links": { "self": "https://example.org/tenders/FIX-JSON-001" },
+        "attachments": [
+          { "title": "RFQ document", "url": "https://example.org/files/fix-json-001.pdf" }
+        ]
+      },
+      {
+        "id": "FIX-JSON-002",
+        "referenceNumber": "FIXTURE/JSON/2026/002",
+        "title": "TEST FIXTURE: Hire of plant and equipment",
+        "summary": "TEST FIXTURE. Hire of plant and equipment for road maintenance.",
+        "datePublished": "2026-08-30",
+        "closingDate": "2026-09-12",
+        "links": { "self": "https://example.org/tenders/FIX-JSON-002" },
+        "attachments": []
+      }
+    ]
+  }
+}

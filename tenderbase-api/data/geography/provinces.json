@@ -1,0 +1,20 @@
+{
+  "dataset": "South African provinces",
+  "provenance": {
+    "source": "ISO 3166-2:ZA principal subdivision codes",
+    "notes": "Province names and two/three-letter codes only. Official websites are intentionally omitted rather than guessed; populate them from an authoritative government listing before use.",
+    "verified_by": "operator",
+    "last_reviewed": "2026-09-02"
+  },
+  "provinces": [
+    { "name": "Eastern Cape", "code": "EC" },
+    { "name": "Free State", "code": "FS" },
+    { "name": "Gauteng", "code": "GP" },
+    { "name": "KwaZulu-Natal", "code": "KZN" },
+    { "name": "Limpopo", "code": "LP" },
+    { "name": "Mpumalanga", "code": "MP" },
+    { "name": "Northern Cape", "code": "NC" },
+    { "name": "North West", "code": "NW" },
+    { "name": "Western Cape", "code": "WC" }
+  ]
+}
