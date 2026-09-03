@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# TenderBase API — local development stack.
+#   docker compose up --build
+#   docker compose run --rm api migrate
+# Secrets are read from the environment / .env file; nothing is hard-coded
+# except non-secret local development defaults.
+# ---------------------------------------------------------------------------
+name: tenderbase
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tenderbase}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tenderbase}
+      POSTGRES_DB: ${POSTGRES_DB:-tenderbase}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tenderbase} -d ${POSTGRES_DB:-tenderbase}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["api"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DEBUG: ${DEBUG:-true}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
+      # Set a real pepper in production; it is what makes stored keys useless
+      # without the deployment configuration. Left empty here so compose fails
+      # loudly (via the production guard) rather than shipping a default.
+      API_KEY_PEPPER: ${API_KEY_PEPPER:-}
+      API_KEY_SELF_SERVICE_ENABLED: ${API_KEY_SELF_SERVICE_ENABLED:-false}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tenderbase}:${POSTGRES_PASSWORD:-tenderbase}@postgres:5432/${POSTGRES_DB:-tenderbase}
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS_ON_START: "true"
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_FAIL_OPEN: ${RATE_LIMIT_FAIL_OPEN:-true}
+      HTTP_ALLOWED_PORTS: ${HTTP_ALLOWED_PORTS:-80,443,8080,8443}
+      HTTP_ALLOW_PRIVATE_NETWORKS: "false"
+      OCR_ENABLED: ${OCR_ENABLED:-false}
+      # The paths below must live inside the mounted volume: documents and raw
+      # payloads are the only state that is not reproducible from PostgreSQL, and
+      # a container-local path silently loses them on the next `up`.
+      DOCUMENT_STORAGE_BACKEND: local
+      DOCUMENT_STORAGE_PATH: /srv/tenderbase/var/documents
+      RAW_PAYLOAD_STORAGE_PATH: /srv/tenderbase/var/raw
+    volumes:
+      # One mount covering both storage roots (documents + raw payloads).
+      - tenderbase-var:/srv/tenderbase/var
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["worker"]
+    environment:
+      # The worker writes documents and raw payloads too, so it must resolve the
+      # *same* storage paths as the API — otherwise a file stored by a worker is
+      # not readable through the API's download endpoint.
+      APP_ENV: ${APP_ENV:-development}
+      DEBUG: ${DEBUG:-true}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-secret-change-me}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tenderbase}:${POSTGRES_PASSWORD:-tenderbase}@postgres:5432/${POSTGRES_DB:-tenderbase}
+      REDIS_URL: redis://redis:6379/0
+      DOCUMENT_STORAGE_BACKEND: local
+      DOCUMENT_STORAGE_PATH: /srv/tenderbase/var/documents
+      RAW_PAYLOAD_STORAGE_PATH: /srv/tenderbase/var/raw
+      HTTP_ALLOWED_PORTS: ${HTTP_ALLOWED_PORTS:-80,443,8080,8443}
+      HTTP_ALLOW_PRIVATE_NETWORKS: "false"
+      OCR_ENABLED: ${OCR_ENABLED:-false}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-null}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+    volumes:
+      - tenderbase-var:/srv/tenderbase/var
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  tenderbase-var:

@@ -1,0 +1,31 @@
+[
+  {
+    "id": 4271,
+    "date": "2026-09-01T08:00:00",
+    "date_gmt": "2026-09-01T06:00:00",
+    "modified_gmt": "2026-09-01T09:30:00",
+    "slug": "fixture-rfq-2026-014",
+    "status": "publish",
+    "type": "post",
+    "link": "https://example.org/2026/09/fixture-rfq-2026-014/",
+    "title": { "rendered": "TEST FIXTURE RFQ 2026/014: Supply of office furniture" },
+    "content": {
+      "rendered": "<p>TEST FIXTURE. Quotations are invited for the supply of office furniture. Closing date: 12 September 2026 at 11:00.</p><p><a href=\"https://example.org/wp-content/uploads/2026/09/fixture-rfq-2026-014.pdf\">Download the RFQ document</a></p>"
+    },
+    "excerpt": { "rendered": "<p>TEST FIXTURE. Quotations are invited for the supply of office furniture.</p>" }
+  },
+  {
+    "id": 4272,
+    "date": "2026-08-28T10:15:00",
+    "date_gmt": "2026-08-28T08:15:00",
+    "slug": "fixture-tender-2026-009",
+    "status": "publish",
+    "type": "post",
+    "link": "https://example.org/2026/08/fixture-tender-2026-009/",
+    "title": { "rendered": "TEST FIXTURE Tender 2026/009: Resealing of municipal roads" },
+    "content": {
+      "rendered": "<p>TEST FIXTURE. Bids are invited for the resealing of municipal roads.</p><p><a href=\"https://example.org/wp-content/uploads/2026/08/fixture-tender-2026-009.pdf\">Tender document</a> and <a href=\"https://example.org/wp-content/uploads/2026/08/fixture-boq.xlsx\">bill of quantities</a>.</p>"
+    },
+    "excerpt": { "rendered": "<p>TEST FIXTURE. Bids are invited for the resealing of municipal roads.</p>" }
+  }
+]
