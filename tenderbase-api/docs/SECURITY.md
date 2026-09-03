@@ -91,6 +91,19 @@ Blob storage keys are validated and path traversal (`../`) is rejected on read, 
   `scripts/load_dev_fixtures.py` refuses to run when `APP_ENV=production`.
 * Raw payloads are retained for reproducibility; treat blob storage as containing third-party
   content and apply your own retention policy.
+* Both blob-storage backends accept only keys the application built itself — a SHA-256 digest shaped
+  by `build_storage_key` — and re-validate every segment on every call. `validate_object_key` refuses
+  `..`, `.`, backslashes, embedded slashes and absolute paths before a file is opened or a request is
+  built, so a hostile source page cannot steer a read or a write on either side of
+  `DOCUMENT_STORAGE_BACKEND`.
+* On `s3` the application sends no canned ACL (asserted in tests), so objects stay private regardless
+  of what else a bucket allows; per-object encryption is requested with
+  `S3_SERVER_SIDE_ENCRYPTION`, while bucket policy and bucket-level encryption remain operator
+  controls that this repository cannot enforce. A presigned URL is treated as a bearer credential —
+  disabled by default (`S3_PRESIGNED_URLS_ENABLED=false`) and short-lived (`S3_PRESIGNED_URL_SECONDS`,
+  300 by default) — and nothing in the HTTP API mints one: no route exposes it, so handing out a direct
+  read is a deliberate operator action, not a side effect of holding a key. The bucket is never assumed
+  to be public, and no write ever relaxes that with a canned ACL.
 
 ## API authentication
 
@@ -153,7 +166,10 @@ separate, outbound limit and is not affected by any of this.
   organisations, not people; if per-IP pinning is ever needed it belongs in `ApiKeyService.verify`.
 * **No write API for data.** Source lifecycle changes (verify, activate, pause) are operator actions via
   `scripts/` — deliberately not HTTP endpoints, so a leaked read key cannot reconfigure ingestion. The
-  only mutating endpoints in the API are the two admin-scoped key operations.
+  mutating endpoints are the two admin-scoped key operations and `POST /api/v1/operations/reconcile`
+  (admin scope, `?dry_run=true` supported, idempotent). It repairs job and source-run bookkeeping —
+  re-enqueue, fail, close, clear a lease, cancel a duplicate — and never touches tender, document or
+  source configuration data, which is why it is safe to run on a schedule and safe to run twice.
 * **No transport-layer security here.** TLS termination, client certificates and HSTS belong to the
   reverse proxy in front of the API (see `docs/DEPLOYMENT.md`).
 

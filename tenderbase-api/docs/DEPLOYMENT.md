@@ -49,6 +49,12 @@ Everything comes from the environment. Required in production:
 | `API_KEY_PEPPER` | Set once, keep stable. Rotating it invalidates every issued API key |
 | `API_KEY_SELF_SERVICE_ENABLED=false` | Leave false: mint keys with `scripts/manage_api_keys.py` so issuance is an audited action |
 | `METRICS_TOKEN` | Required if `/metrics` is reachable from anything but a private network |
+| `DOCUMENT_STORAGE_BACKEND` | `local` (default) or `s3`; `s3` additionally requires `S3_BUCKET` and should set `S3_REGION` |
+| `SOURCE_CLAIM_LEASE_SECONDS` | 1800. Startup refuses a lease shorter than `WORKER_JOB_TIMEOUT_SECONDS`, or a run would outlive its lease and a second worker could start the same source |
+| `JOB_RECONCILIATION_INTERVAL_SECONDS` | 300 — how often the reconcile job sweeps. Floor 30 s; a period ARQ cron cannot express is rounded **up** to the next tick and the worker logs `worker.reconciliation_interval_coarsened` |
+| `JOB_QUEUED_STALE_AFTER_SECONDS` / `JOB_RUNNING_GRACE_SECONDS` | How long before the reconciler calls a job lost (enforced floors: 60 s / 120 s, the latter added to `WORKER_JOB_TIMEOUT_SECONDS`). Raise the grace if queue latency under load is longer than 5 minutes |
+| `RECONCILE_REENQUEUE` | `true` re-dispatches a stale job that still has retries left; `false` fails it and lets the next scheduled tick claim the source normally |
+| `FRESHNESS_AGING_HOURS` / `FRESHNESS_STALE_HOURS` | 36 / 96 — the `fresh`/`aging`/`stale` buckets behind `/operations/sources/freshness` and `tenderbase_source_freshness_hours` |
 | `RATE_LIMIT_ENABLED` / `RATE_LIMIT_FAIL_OPEN` | See the rate-limit note below |
 
 Keep `HTTP_ALLOW_PRIVATE_NETWORKS=false` in every deployed environment. The outbound **port**
@@ -90,7 +96,7 @@ python -m scripts.import_sources /path/to/verified-sources.json
 | Worker | Scale by number of sources; ARQ jobs are per-source, so concurrency is naturally bounded |
 | PostgreSQL | The read workload is index-friendly; the FTS/trigram indexes from `b2f1c9d40a11` matter once the dataset grows |
 | Redis | Queue only; no application state |
-| Blob storage | Local volume works for one host; use an S3-compatible backend behind `BlobStorage` for multi-host |
+| Blob storage | Local volume works for one host; `DOCUMENT_STORAGE_BACKEND=s3` (S3, MinIO, R2, Ceph) is the multi-host option — see `docs/DOCUMENTS.md` |
 
 Crawling is deliberately polite: per-host rate limits, robots.txt, backoff on failure. Do not scale
 workers to "go faster" against a single municipal site.
@@ -148,6 +154,32 @@ someone probing for keys, which is worth a page precisely because the API answer
 Terminate TLS at the proxy, forward `X-Forwarded-For`/`X-Forwarded-Proto` (the entrypoint enables
 `--proxy-headers`), and set request-body and timeout limits there. The API sets no cookies and
 holds no session state.
+
+## Scheduling, claims and reconciliation
+
+Every API replica and the worker run `schedule_due_sources` on a cron tick. Before it enqueues
+anything, that job claims due sources in the database: an ids-first `SELECT … FOR UPDATE SKIP LOCKED`
+over the rows that are active, unsuppressed, due and unclaimed, then the claim (`next_run_at`,
+`claim_expires_at`, `claim_job_id`) and the `ingestion_jobs` row committed together. Two schedulers
+therefore receive disjoint sets, a source that is already claimed is invisible to the next tick rather
+than enqueued-and-rejected, and a crashed worker's source becomes claimable again when its lease
+expires. Releasing a claim and rescheduling the next window happen in the ingestion job's own
+transaction, so the two can never disagree.
+
+`reconcile_jobs` runs every `JOB_RECONCILIATION_INTERVAL_SECONDS` and repairs what a lost worker, a
+dropped queue or a failed `finally` block leaves behind: a `SourceRun` still `RUNNING` under a job that
+already reached a terminal state is closed `FAILED` with its counters and duration preserved; a live
+job that stopped moving is re-enqueued (or failed, with `RECONCILE_REENQUEUE=false`), its source's
+failure counters advanced so the normal backoff applies and its next run is made due now; an expired
+lease is cleared; a duplicate live claim is cancelled. It reuses the claim query's own predicate, so a
+source another worker is currently holding is never touched, and it never breaks a live lease or
+resurrects a terminally failed job.
+
+The same repair is an operator endpoint: `POST /api/v1/operations/reconcile` (admin scope, `?dry_run=true`
+to see what would change, repeatable — a second pass reports zero actions). Each action is counted in
+`tenderbase_recovery_actions_total`, and `GET /api/v1/operations/sources/freshness` answers "is
+ingestion actually delivering, or just running?" without a psql session: active-and-claimable sources
+first, worst first, with `PAUSED` / `NOT_ACTIVE` reported rather than silently dropped.
 
 ## Backups
 

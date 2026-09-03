@@ -92,11 +92,46 @@ class Settings(BaseSettings):
     http_allowed_ports: str = "80,443,8080,8443"
 
     # -- Documents --------------------------------------------------------
+    #: One switch for both blob stores (documents and raw payloads): the abstraction
+    #: exists so that moving to object storage is a configuration change, and a
+    #: deployment where documents live in S3 while their raw evidence lives on a
+    #: local disk is the worse surprise. The two namespaces stay separate
+    #: (``documents/`` and ``raw/`` prefixes in the bucket); switching the backend does
+    #: **not** migrate objects already written to ``DOCUMENT_STORAGE_PATH`` — that is a
+    #: copy step, documented in ``docs/DEPLOYMENT.md``.
     document_storage_backend: Literal["local", "s3"] = "local"
     document_storage_path: Path = Path("./data/documents")
     document_max_bytes: int = 100 * 1024 * 1024
     raw_payload_storage_path: Path = Path("./data/raw")
     raw_payload_inline_max_bytes: int = 64 * 1024
+
+    # -- S3 / MinIO (used only when DOCUMENT_STORAGE_BACKEND=s3) ----------
+    s3_bucket: str = ""
+    s3_region: str = "af-south-1"
+    #: Custom endpoint for MinIO or another S3-compatible service. Left empty for AWS,
+    #: where the SDK resolves the endpoint from the region (and the chain of
+    #: environment / instance-role credentials).
+    s3_endpoint_url: str = ""
+    #: Path-style addressing (``endpoint/bucket/key``) is what MinIO needs; AWS wants
+    #: the default virtual-host style.
+    s3_force_path_style: bool = False
+    s3_key_prefix: str = "tenderbase"
+    #: Server-side encryption header for uploads. ``AES256`` (S3-managed keys) is the
+    #: default; set empty only when the bucket policy enforces something else, because
+    #: an unencrypted ``PutObject`` against a bucket that requires SSE is an error.
+    s3_server_side_encryption: str = "AES256"
+    #: Optional explicit credentials. When both are empty the AWS default provider
+    #: chain is used, which is what a node role or an ECS task identity provides;
+    #: putting keys in this file is the fallback, not the recommendation.
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    s3_read_timeout_seconds: float = Field(default=60.0, gt=0)
+    #: Objects are private by construction; a presigned URL is the only way a client is
+    #: handed a direct link, and it is off unless the deployment opts in (a signed URL
+    #: is a bearer credential with an expiry).
+    s3_presigned_urls_enabled: bool = False
+    s3_presigned_url_seconds: int = Field(default=300, ge=1, le=604800)
 
     # -- OCR --------------------------------------------------------------
     ocr_enabled: bool = False
@@ -185,6 +220,34 @@ class Settings(BaseSettings):
                 f"{self.source_claim_lease_seconds} < {self.worker_job_timeout_seconds} would "
                 "let another scheduler claim a source whose worker is still running"
             )
+        if self.document_storage_backend == "s3":
+            if not self.s3_bucket.strip():
+                raise ValueError(
+                    "S3_BUCKET must be set when "
+                    "DOCUMENT_STORAGE_BACKEND=s3; the application will not start with a "
+                    "blob store that has nowhere to write"
+                )
+            prefix = self.s3_key_prefix.strip().strip("/")
+            segments = prefix.split("/") if prefix else []
+            if prefix and not all(
+                part not in (".", "..")
+                and all(ch.isalnum() or ch in "-_" for ch in part)
+                and len(part) <= 128
+                for part in segments
+            ):
+                raise ValueError(
+                    "S3_KEY_PREFIX may only contain letters, digits, '-' and '_' in each "
+                    f"path segment, and no '.' or '..' segment (got {self.s3_key_prefix!r}). "
+                    "It is prepended to every object key, so a traversal segment here "
+                    "would move objects out of the namespace this deployment owns"
+                )
+            if (self.s3_access_key_id and not self.s3_secret_access_key) or (
+                self.s3_secret_access_key and not self.s3_access_key_id
+            ):
+                raise ValueError(
+                    "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together; one "
+                    "of them alone would be silently ignored by the credentials chain"
+                )
         if self.freshness_stale_hours <= self.freshness_aging_hours:
             raise ValueError(
                 "FRESHNESS_STALE_HOURS must be greater than FRESHNESS_AGING_HOURS "

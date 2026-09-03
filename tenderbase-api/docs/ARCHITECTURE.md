@@ -98,8 +98,11 @@ change in the parser cannot corrupt what is already stored.
 
 ## Storage and search abstractions
 
-* `BlobStorage` is an ABC with a local filesystem implementation; the S3-compatible backend is the
-  documented extension point. Documents are addressed by SHA-256, never by filename.
+* `BlobStorage` is an ABC with two implementations: `LocalBlobStorage` (one host, or a volume shared
+  by the API and worker containers) and `S3BlobStorage` for S3-compatible object stores, chosen by
+  `DOCUMENT_STORAGE_BACKEND`. Objects are addressed by SHA-256, never by filename, and both backends
+  enforce the same key rules before a request is built. The S3 backend is exercised against an
+  in-process mock (`moto`), not against a live bucket.
 * `SearchBackend` is chosen per session dialect: PostgreSQL uses `tsvector`/`ts_rank` plus trigram
   similarity; other dialects fall back to a portable `LIKE` search. The API response contract is
   identical either way, so a dedicated search cluster can be introduced later without breaking
@@ -115,4 +118,5 @@ change in the parser cannot corrupt what is already stored.
   tier is one function — `policy_for(tier, settings)` — not a schema change.
 * **AI enrichment** — `AIProvider` ABC with a null implementation. Vendor adapters raise
   `NotImplementedError` rather than pretending to work.
-* **Object storage** — swap `LocalBlobStorage` for an S3 implementation behind the same ABC.
+* **Object storage** — `DOCUMENT_STORAGE_BACKEND=s3` selects the shipped `S3BlobStorage`. A store that
+  needs a different SDK is a new `BlobStorage` subclass plus one line in the factory; no caller changes.

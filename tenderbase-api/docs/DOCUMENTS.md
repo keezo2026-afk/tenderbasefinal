@@ -35,8 +35,9 @@ link discovered ─▶ download ─▶ sniff format ─▶ sha256 ─▶ store �
    conditional re-downloads.
 3. **Format sniffing** — magic bytes first, declared content type second, filename last. A
    `.pdf` that is really HTML is recorded as HTML.
-4. **Storage** — through the `BlobStorage` ABC. `LocalBlobStorage` ships; an S3-compatible backend
-   is the documented extension point. Path traversal is rejected on both read and write.
+4. **Storage** — through the `BlobStorage` ABC, implemented by `LocalBlobStorage` and
+   `S3BlobStorage` (`DOCUMENT_STORAGE_BACKEND=s3`). A path-traversal-shaped key is rejected on read
+   and on write, on both backends.
 5. **Versioning** — a new hash creates a `document_versions` row and bumps `current_version`.
 6. **Text extraction** — see below.
 7. **Classification** — rule-based typing from filename, link text and extracted text.
@@ -99,8 +100,64 @@ enhancement behind the `AIProvider` interface, disabled by default.
 ## Operational notes
 
 * Pending downloads are processed by the worker (`process_pending_documents`), in bounded batches.
-* Storage is configured with `STORAGE_BACKEND` (`local`) and `STORAGE_LOCAL_PATH`; in Docker the
-  path is a named volume shared by the API and worker containers.
+* Storage is configured with `DOCUMENT_STORAGE_BACKEND` (`local` | `s3`) plus
+  `DOCUMENT_STORAGE_PATH`, `RAW_PAYLOAD_STORAGE_PATH` or the `S3_*` settings described below. In
+  Docker the local path is a named volume shared by the API and worker containers.
+* Raw ingestion payloads (`raw_payload_key`) follow the same switch, so evidence never stays on a
+  disk that a backup job does not read.
+
+## Blob storage backends
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `DOCUMENT_STORAGE_BACKEND` | `local` | `local` or `s3`; also governs raw-payload offload |
+| `DOCUMENT_STORAGE_PATH` | `./data/documents` | Local blob root (`local` backend only) |
+| `RAW_PAYLOAD_STORAGE_PATH` | `./data/raw` | Local raw-payload root (`local` backend only) |
+| `S3_BUCKET` | — | Required when the backend is `s3`; startup fails without it |
+| `S3_REGION` | `af-south-1` | Signing region; also how AWS endpoints are resolved when `S3_ENDPOINT_URL` is empty |
+| `S3_ENDPOINT_URL` | — | S3-compatible endpoint (MinIO, R2, Ceph); empty means AWS |
+| `S3_FORCE_PATH_STYLE` | `false` | `endpoint/bucket/key` addressing, which most MinIO setups need; AWS wants the default virtual-host style |
+| `S3_KEY_PREFIX` | `tenderbase` | Namespace joined in front of every key. Each segment is limited to `[A-Za-z0-9._-]` and dot segments are refused, because a loose prefix would be an escape hatch |
+| `S3_SERVER_SIDE_ENCRYPTION` | `AES256` | Per-object SSE header; set empty only when the bucket enforces encryption another way |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | — | Both or neither (a half pair is a startup error). Left empty, the default AWS provider chain is used — instance role, ECS task identity, shared profile |
+| `S3_CONNECT_TIMEOUT_SECONDS` / `S3_READ_TIMEOUT_SECONDS` | `5.0` / `60.0` | boto3 timeouts; the read timeout applies per chunk while streaming |
+| `S3_PRESIGNED_URLS_ENABLED` | `false` | Must be true before a presigned GET will be minted |
+| `S3_PRESIGNED_URL_SECONDS` | `300` | Lifetime of such a URL (1 s – 7 d) |
+
+Retries are fixed in the client configuration (`adaptive`, at most 5 attempts including the
+first) rather than a setting: a document download already has its own retry policy one level up,
+and two independent backoffs on the same failure make an outage look longer than it is.
+
+Operator-visible rules:
+
+* **Keys are content-addressed and internal.** `sha256(content)` decides the object key
+  (`documents/ab/cd/<hash>.pdf` for files, `html/ab/cd/<hash>` for raw payloads); a filename or URL
+  from a source can never select a path, and `S3_KEY_PREFIX` is joined by the backend, not by
+  callers.
+* **Nothing is made public by the application.** No canned ACL is sent on write (asserted in tests),
+  so objects stay private whatever the bucket otherwise allows — a public bucket is never assumed and
+  never required. `S3BlobStorage.presigned_get_url` exists for deployments that decide to hand out a
+  temporary direct read, and it refuses to sign anything while `S3_PRESIGNED_URLS_ENABLED=false`.
+  **No API endpoint currently calls it**: the HTTP API keeps serving metadata and extracted text only,
+  so a direct link would have to be minted by an operator tool first.
+* **Switching backends does not move data.** Existing objects keep living where they were written;
+  the factory only decides where *new* writes and reads look. A migration means copying the prefix
+  (for example `aws s3 cp --recursive`) or re-running ingestion.
+* **A missing bucket is an error, not an absence.** `exists()` is false only for `404`/`NoSuchKey`;
+  credential failures, `NoSuchBucket` and 5xx propagate as `DocumentError` so an outage cannot be
+  recorded as "the evidence was deleted".
+* **Writes are streamed.** The API never materialises a whole object in memory: the download writes
+  through a spooled handle (16 MiB in RAM, then temp-dir backed) and uploads with `upload_fileobj`,
+  and the stream is aborted if the download fails, so a partial body never appears in the bucket.
+* **The SDK is an optional extra.** `boto3` is imported lazily, so a local-only deployment installs
+  nothing extra and an `s3` deployment that forgot the dependency fails with a message naming
+  `pip install "tenderbase-api[s3]"` rather than an `ImportError` at import time of the whole app.
+  Container images that want the backend must add the extra at build time; this repository's image
+  does not include it.
+
+* Verified against `moto` (in-process S3 mock) with 41 tests covering round-trips, streaming,
+  key safety, prefix handling, encryption headers and factory routing — **not** against a live AWS
+  bucket, which needs credentials this environment does not have.
 * The API serves document metadata and extracted text only — it is not a file proxy. Serving the
   binaries is a deployment decision (signed URLs from object storage, or not at all).
 * Nothing is deleted automatically. Blob retention is an operator policy, not a hidden behaviour.
