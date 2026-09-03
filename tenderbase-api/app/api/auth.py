@@ -25,6 +25,7 @@ requires a key when ``enforce_api_keys`` is on.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Any
 from urllib.parse import unquote
@@ -174,15 +175,24 @@ def attach_rate_headers(response_headers: dict[str, str], decision: RateDecision
         response_headers.update(decision.headers())
 
 
-async def api_access(
+async def authenticate(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_auth_session)],
     settings: SettingsDep,
     credential: CredentialDep = None,
+    *,
+    required_scope: str | None = None,
 ) -> Principal:
-    """Authenticate + authorise + rate-limit one protected request."""
+    """Authenticate + authorise + rate-limit one protected request.
+
+    ``required_scope`` is the scope the caller must hold. ``None`` means "infer it from
+    the path" — the historical behaviour, kept as the default so nothing that wired
+    itself to :func:`api_access` changes. New code passes it explicitly through
+    :func:`require_scope`, because a scope derived from a URL string is a scope that
+    changes when somebody moves a route.
+    """
     service = ApiKeyService(session, settings)
-    required = required_scope_for(request.url.path)
+    required = required_scope_for(request.url.path) if required_scope is None else required_scope
 
     if not settings.enforce_api_keys:
         # Unauthenticated deployment mode (local development / tests). Limits,
@@ -226,5 +236,89 @@ async def api_access(
     except Exception as exc:  # noqa: BLE001 - audit is best effort
         logger.warning("auth.touch_commit_failed", error=str(exc))
         await session.rollback()
+    # Detach the credential row from the request session. A route may commit while it
+    # handles a request (the operations reconcile route does), and a commit expires
+    # every object the session holds — the request logger then reads
+    # ``principal.display_id`` *after* the response, finds the row expired, and tries
+    # to re-select it through a session that is already closing. That is a
+    # ``DetachedInstanceError`` in a log line, which turns a successful request into a
+    # 500. An expunged row keeps the attributes it loaded during verification and can
+    # no longer expire, so the log line is free to read it.
+    try:
+        session.sync_session.expunge(key)
+    except Exception:  # noqa: BLE001 - already-detached is fine, never a request failure
+        pass
     request.state.principal = principal
     return principal
+
+
+async def api_access(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_auth_session)],
+    settings: SettingsDep,
+    credential: CredentialDep = None,
+) -> Principal:
+    """Protect a route with the scope its path implies (see :func:`authenticate`).
+
+    Kept for routes that have no scope of their own to declare. A router that knows its
+    scope should use :func:`require_scope` instead: the OpenAPI document, the 403
+    message and the authorising check then all name the same scope, and moving a route
+    under a different prefix cannot silently change what it permits.
+    """
+    return await authenticate(request, session, settings, credential)
+
+
+def require_scope(scope: ApiKeyScope | str) -> Callable[..., Awaitable[Principal]]:
+    """Build a dependency that requires *exactly* ``scope`` on the routes that use it.
+
+    The returned callable has ``authenticate``'s dependency signature, so FastAPI
+    resolves the session, credential and settings the same way and the HMAC check,
+    prefix lookup, revocation/expiry tests, last-used write and rate limit are unchanged
+    — only the source of the required scope differs. Dev deployments
+    (``enforce_api_keys=false``) still short-circuit to an anonymous principal, so this
+    adds no local-development friction.
+    """
+    required = str(scope)
+
+    async def dependency(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_auth_session)],
+        settings: SettingsDep,
+        credential: CredentialDep = None,
+    ) -> Principal:
+        return await authenticate(request, session, settings, credential, required_scope=required)
+
+    # FastAPI uses the callable's name in the OpenAPI ``securitySchemes`` and in error
+    # traces; a closure called ``dependency`` would make every protected route look the
+    # same in a stack trace and in the schema.
+    dependency.__name__ = f"require_{required.lower().replace(':', '_')}_scope"
+    dependency.__qualname__ = dependency.__name__
+    dependency.__doc__ = f"Requires the ``{required}`` scope."
+    return dependency
+
+
+#: Named dependencies for the routers, so ``router.py`` reads as a permission table
+#: rather than a list of imports.
+TenderReadDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.READ_TENDERS))]
+SourceReadDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.READ_SOURCES))]
+DocumentReadDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.READ_DOCUMENTS))]
+StatisticsReadDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.READ_STATISTICS))]
+GeographyReadDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.READ_GEOGRAPHY))]
+AdminDep = Annotated[Principal, Depends(require_scope(ApiKeyScope.ADMIN))]
+
+__all__ = [
+    "AdminDep",
+    "CredentialDep",
+    "DocumentReadDep",
+    "GeographyReadDep",
+    "Principal",
+    "SourceReadDep",
+    "StatisticsReadDep",
+    "TenderReadDep",
+    "api_access",
+    "attach_rate_headers",
+    "authenticate",
+    "extract_credentials",
+    "require_scope",
+    "required_scope_for",
+]

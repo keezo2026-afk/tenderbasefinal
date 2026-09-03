@@ -28,7 +28,7 @@ responses through ``httpx.MockTransport``.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -417,24 +417,84 @@ def mock_fetcher() -> Callable[[dict[str, tuple[int, str, str]]], HTTPFetcher]:
 
 
 @pytest.fixture(scope="session")
-def redis_url() -> str | None:
+def embedded_redis_url() -> Iterator[str | None]:
+    """Start a real Redis for the session when nothing else is listening.
+
+    This is *not* a fake or an in-memory stub: ``redislite`` runs an actual Redis
+    server process (the same binary, the same RESP protocol) with a private unix
+    socket in a temporary directory, and ARQ connects to it through the URL this
+    fixture returns. The suite's queue, retry, rate-limit, cache and lock tests were
+    otherwise skippable by simply not installing Redis, which meant "the worker works"
+    was never actually checked on a clean machine.
+
+    Returns ``None`` when redislite is unavailable, and the tests that need a broker
+    skip with their existing, explicit reason.
+    """
+    import shutil
+    import tempfile
+
+    try:
+        from redislite import Redis  # type: ignore[import-untyped]
+    except ImportError:
+        yield None
+        return
+    directory = tempfile.mkdtemp(prefix="tenderbase-redis-")
+    server = None
+    try:
+        server = Redis(os.path.join(directory, "tenderbase-test.rdb"))
+        socket_path = (server.config_get("unixsocket") or {}).get("unixsocket")
+        if not socket_path:
+            yield None
+            return
+        # ``db=`` is the parameter both ARQ's DSN parser and redis-py understand, so the
+        # queue and the rate limiter land on the same logical database.
+        yield f"unix://{socket_path}?db=15"
+    except Exception:  # noqa: BLE001 - a sandbox that cannot fork a server is not a failure
+        yield None
+    finally:
+        if server is not None:
+            # ``SHUTDOWN NOSAVE`` on the *socket*, not redislite's ``shutdown()`` helper:
+            # that one sends a modifier this server's grammar rejects, which makes
+            # redislite fall back to SIGTERM and log a scary-looking warning during
+            # interpreter teardown. Closing the connection from the server side is what
+            # we actually want, and its echo (``ConnectionError``) is expected.
+            try:
+                server.execute_command("SHUTDOWN", "NOSAVE")
+            except Exception:  # noqa: BLE001 - the server dying is the success case
+                pass
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def redis_url(embedded_redis_url: str | None) -> str | None:
     """A Redis to run live queue tests against, or ``None`` when there is none.
 
     Uses database 15 of the configured server so the suite can flush the whole
     thing without touching anything else running on that host. ``REDIS_URL``
-    decides the host/port; a socket probe decides whether the tests run at all.
+    decides the host/port; a socket probe decides whether the tests run at all —
+    and when nothing answers, the session's embedded Redis is used instead.
     """
     import socket
     from urllib.parse import urlsplit
 
     configured = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
     parts = urlsplit(configured)
+    if parts.scheme == "unix":
+        # An operator-supplied socket is used as given, database 15 included.
+        path = parts.path
+        try:
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.settimeout(0.5)
+                probe.connect(path)
+        except OSError:
+            return embedded_redis_url
+        return f"unix://{path}?db=15"
     host, port = parts.hostname or "localhost", parts.port or 6379
     try:
         with socket.create_connection((host, port), timeout=0.5):
             pass
     except OSError:
-        return None
+        return embedded_redis_url
     return f"redis://{host}:{port}/15"
 
 

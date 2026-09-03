@@ -251,6 +251,7 @@ class ErrorStage(_Extensible):
     VERSION = "VERSION"
     DOCUMENT = "DOCUMENT"
     PERSIST = "PERSIST"
+    WORKER = "WORKER"
     UNKNOWN = "UNKNOWN"
 
     @classmethod

@@ -17,9 +17,9 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from app.api.auth import Principal, api_access
+from app.api.auth import AdminDep
 from app.api.dependencies import MetaDep, SessionDep, SettingsDep
 from app.db.models.security import ApiKey
 from app.schemas.common import DataResponse, ListResponse, PaginationMeta
@@ -65,7 +65,7 @@ def _read(key: ApiKey) -> ApiKeyRead:
 async def list_api_keys(
     session: SessionDep,
     meta: MetaDep,
-    _principal: Annotated[Principal, Depends(api_access)],
+    _principal: AdminDep,
     include_revoked: Annotated[bool, Query()] = True,
 ) -> ListResponse[ApiKeyRead]:
     service = ApiKeyService(session)
@@ -85,7 +85,7 @@ async def list_api_keys(
 async def api_key_summary(
     session: SessionDep,
     meta: MetaDep,
-    _principal: Annotated[Principal, Depends(api_access)],
+    _principal: AdminDep,
 ) -> DataResponse[ApiKeySummary]:
     service = ApiKeyService(session)
     counts = await service.stats()
@@ -116,7 +116,7 @@ async def create_api_key(
     session: SessionDep,
     meta: MetaDep,
     settings: SettingsDep,
-    _principal: Annotated[Principal, Depends(api_access)],
+    _principal: AdminDep,
     response: Response,
 ) -> DataResponse[ApiKeyCreated]:
     if not settings.api_key_self_service_enabled:
@@ -165,7 +165,7 @@ async def revoke_api_key(
     key_id: UUID,
     session: SessionDep,
     meta: MetaDep,
-    _principal: Annotated[Principal, Depends(api_access)],
+    _principal: AdminDep,
     payload: ApiKeyRevokeRequest | None = None,
 ) -> DataResponse[ApiKeyRead]:
     service = ApiKeyService(session)
@@ -183,7 +183,7 @@ async def get_api_key(
     key_id: UUID,
     session: SessionDep,
     meta: MetaDep,
-    _principal: Annotated[Principal, Depends(api_access)],
+    _principal: AdminDep,
 ) -> DataResponse[ApiKeyRead]:
     service = ApiKeyService(session)
     key = await service.get(str(key_id))

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -144,7 +144,54 @@ class Settings(BaseSettings):
     #: How long ARQ keeps job results in Redis for inspection.
     worker_keep_result_seconds: int = Field(default=3600, ge=0)
 
+    # -- scheduling, claiming and recovery --------------------------------
+    #: How long a scheduler's claim on a source lasts. A claim is a lease, not a lock:
+    #: when it expires the source becomes claimable again, so a worker killed mid-run
+    #: delays the next crawl instead of cancelling it forever.
+    source_claim_lease_seconds: int = Field(default=1800, ge=30)
+    #: How often the worker reconciles database job rows against the queue.
+    job_reconciliation_interval_seconds: int = Field(default=300, ge=30)
+    #: A ``QUEUED`` row older than this was never dispatched (the enqueue failed, or
+    #: the API wrote it and died before reaching Redis).
+    job_queued_stale_after_seconds: int = Field(default=900, ge=30)
+    #: Extra time past ``WORKER_JOB_TIMEOUT_SECONDS`` before a ``RUNNING`` row is
+    #: called stuck. Generous by design: ARQ enforces its own timeout, and a
+    #: reconciler that fires first would abort work that is merely slow.
+    job_running_grace_seconds: int = Field(default=300, ge=0)
+    #: Re-enqueue jobs lost in the queue, rather than only marking them failed.
+    #: Off means recovery is visible-but-manual, which some operators prefer.
+    reconcile_reenqueue: bool = True
+
+    # -- source freshness --------------------------------------------------
+    #: A source with no successful run for this long is ``AGING``.
+    freshness_aging_hours: float = Field(default=36.0, gt=0)
+    #: …and ``STALE`` past this. Thresholds are configuration, not code, because
+    #: "how out of date is unacceptable" is a product decision per deployment.
+    freshness_stale_hours: float = Field(default=96.0, gt=0)
+
     # -- Validators -------------------------------------------------------
+    @model_validator(mode="after")
+    def _check_recovery_windows(self) -> Self:
+        """Keep the recovery knobs mutually consistent.
+
+        A lease shorter than the job timeout would let a second scheduler claim a
+        source whose worker is still crawling it — the exact duplicate the claim exists
+        to prevent. And "aging" must arrive before "stale", or the freshness buckets
+        report nothing until they are already stale.
+        """
+        if self.source_claim_lease_seconds < self.worker_job_timeout_seconds:
+            raise ValueError(
+                "SOURCE_CLAIM_LEASE_SECONDS must be >= WORKER_JOB_TIMEOUT_SECONDS: "
+                f"{self.source_claim_lease_seconds} < {self.worker_job_timeout_seconds} would "
+                "let another scheduler claim a source whose worker is still running"
+            )
+        if self.freshness_stale_hours <= self.freshness_aging_hours:
+            raise ValueError(
+                "FRESHNESS_STALE_HOURS must be greater than FRESHNESS_AGING_HOURS "
+                f"(got {self.freshness_stale_hours} and {self.freshness_aging_hours})"
+            )
+        return self
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

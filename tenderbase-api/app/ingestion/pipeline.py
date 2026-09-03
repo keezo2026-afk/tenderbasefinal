@@ -40,6 +40,7 @@ from app.ingestion.parser import StageError, parse_source
 from app.ingestion.validator import Validator
 from app.ingestion.versioning import VersionEngine
 from app.logging import get_logger, source_id_ctx
+from app.observability import metrics
 from app.schemas.tender import NormalizedOpportunity
 from app.utils.dates import utcnow
 from app.utils.hashing import contact_fingerprint
@@ -62,6 +63,10 @@ class RunStats:
     items_failed: int = 0
     documents_found: int = 0
     uncertain_duplicates: int = 0
+    records_invalid: int = 0
+    records_unchanged: int = 0
+    duplicates_exact: int = 0
+    duplicates_fuzzy: int = 0
     errors: list[StageError] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -73,6 +78,10 @@ class RunStats:
             "items_failed": self.items_failed,
             "documents_found": self.documents_found,
             "uncertain_duplicates": self.uncertain_duplicates,
+            "records_invalid": self.records_invalid,
+            "records_unchanged": self.records_unchanged,
+            "duplicates_exact": self.duplicates_exact,
+            "duplicates_fuzzy": self.duplicates_fuzzy,
             "error_count": len(self.errors),
             # A bounded projection, not the full list: this dict is stored in a
             # JSONB column and rendered by the operations endpoints, while the
@@ -196,6 +205,7 @@ class IngestionPipeline:
         record.quality_issues = validation.as_dict()
         if not validation.is_persistable:
             stats.items_skipped += 1
+            stats.records_invalid += 1
             stats.errors.append(
                 StageError(
                     stage=ErrorStage.VALIDATE,
@@ -220,11 +230,19 @@ class IngestionPipeline:
                 record.data_quality = DataQuality.NEEDS_REVIEW
 
         if duplicate.is_duplicate and duplicate.existing_id is not None:
+            if duplicate.decision.name == "EXACT":
+                stats.duplicates_exact += 1
+            else:
+                stats.duplicates_fuzzy += 1
             existing = await self._load_opportunity(session, duplicate.existing_id)
             if existing is not None:
                 updated = await self._update_existing(session, existing, record, run)
                 stats.items_updated += int(updated)
                 stats.items_skipped += int(not updated)
+                # "unchanged" is the interesting half of a skip: the crawl found the
+                # same tender and correctly wrote nothing. Counting it separately is
+                # what distinguishes "source has nothing new" from "source is broken".
+                stats.records_unchanged += int(not updated)
                 stats.documents_found += len(record.documents)
                 return
 
@@ -526,6 +544,27 @@ class IngestionPipeline:
             job.result = stats.as_dict()
             if not succeeded and stats.errors:
                 job.error_message = stats.errors[0].message[:2000]
+
+        # The one place a run's numbers reach Prometheus: both the worker and a manual
+        # ``run_ingestion`` pass through here, so the metrics cannot disagree with the
+        # ``source_runs`` row an operator reads in the API.
+        metrics.observe_run(
+            outcome="success" if succeeded else "failure",
+            duration_seconds=duration_ms / 1000.0,
+            created=stats.items_created,
+            updated=stats.items_updated,
+            skipped=stats.items_skipped,
+            failed=stats.items_failed,
+            counts={
+                "found": stats.items_found,
+                "invalid": stats.records_invalid,
+                "unchanged": stats.records_unchanged,
+                "duplicates_exact": stats.duplicates_exact,
+                "duplicates_fuzzy": stats.duplicates_fuzzy,
+                "needs_review": stats.uncertain_duplicates,
+                "documents_found": stats.documents_found,
+            },
+        )
 
         logger.info(
             "pipeline.finished",

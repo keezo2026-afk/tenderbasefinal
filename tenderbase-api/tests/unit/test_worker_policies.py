@@ -253,8 +253,19 @@ def test_worker_settings_are_taken_from_configuration(monkeypatch):
             "schedule_due_sources",
             "process_documents",
             "monitor_source_health",
+            # Recovery has to be a *worker* task: an API pod restarting must not
+            # postpone the pass that repairs the jobs its requests left behind.
+            "reconcile_jobs",
         ]
-        assert len(reloaded.WorkerSettings.cron_jobs) == 3
+        crons = reloaded.WorkerSettings.cron_jobs
+        assert len(crons) == 4
+        # The reconciliation tick is the configured interval, not a literal: this is
+        # the assertion that JOB_RECONCILIATION_INTERVAL_SECONDS is actually wired.
+        reconcile_cron = next(c for c in crons if c.coroutine.__name__ == "reconcile_jobs")
+        # WORKER interval 300s is a clean divisor of an hour, so the cron field holds
+        # exactly the twelve expected minute values and nothing in ``second``.
+        assert reconcile_cron.minute == frozenset(range(0, 60, 5))
+        assert not reconcile_cron.second
     finally:
         importlib.reload(scheduler_module)
         config_module.get_settings.cache_clear()
@@ -390,3 +401,51 @@ async def test_defer_options_are_mutually_exclusive():
     queue = JobQueue(Settings(app_env="test", redis_url="redis://127.0.0.1:6379/0"))
     with pytest.raises(ValueError, match="not both"):
         await queue.enqueue("x", defer_seconds=5, defer_until=utcnow())
+
+
+def test_cron_ticks_translate_periods_without_ever_running_earlier():
+    """``cron_ticks`` is where a period becomes something ARQ's cron can express.
+
+    The rules that matter: never *finer* than requested (a recovery pass firing every
+    second is an incident), exact whenever the period tiles its field, and ``exact``
+    false whenever it had to coarsen — the worker logs that so a configuration that
+    silently means something else is visible.
+    """
+    from app.workers.scheduler import cron_ticks
+
+    exact = {
+        1: ("second", 1),
+        30: ("second", 30),
+        60: ("minute", 60),
+        300: ("minute", 300),
+        900: ("minute", 900),
+        3600: ("minute", 3600),
+        7200: ("hour", 7200),
+        86400: ("hour", 86400),
+    }
+    for requested, (field, effective) in exact.items():
+        tick = cron_ticks(requested)
+        assert (tick.field, tick.interval_seconds) == (field, effective)
+        assert tick.exact, requested
+        # A tick's values must tile its field: every listed value is exactly
+        # ``effective`` seconds after the previous one, wrapping inside the field.
+        span = {"second": 60, "minute": 60, "hour": 24}[field]
+        unit = {"second": 1, "minute": 60, "hour": 3600}[field]
+        assert max(tick.values) < span
+        assert sorted(tick.values) == sorted(
+            value * unit // unit for value in range(0, span, tick.interval_seconds // unit)
+        )
+
+    # 300 is the default interval and is exact, so it is not in this table.
+    coarsened = {25: 30, 45: 60, 1500: 1800, 2700: 3600, 5400: 7200, 90000: 86400}
+    assert cron_ticks(45).field == "second"  # once a minute, at second 0
+    for requested, effective in coarsened.items():
+        tick = cron_ticks(requested)
+        assert tick.interval_seconds == effective
+        assert not tick.exact
+        if requested <= 86400:
+            assert tick.interval_seconds >= requested, "never earlier than asked"
+        else:
+            # Past a day there is no coarser cron expression at all, so daily is the
+            # answer and it is reported as inexact rather than pretending to be right.
+            assert tick.interval_seconds == 86400

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.documents.extractor import TextExtractor
 from app.enums import DocumentType
 from app.errors import DocumentNotFoundError
 from app.logging import get_logger
+from app.observability import metrics
 from app.schemas.common import PaginationParams
 from app.utils.dates import utcnow
 
@@ -92,7 +94,16 @@ class DocumentService:
         """
         result = await downloader.download_document(self.session, document)
         if result is None:
+            # Recorded, not raised: a document whose URL 404s is a data-quality fact
+            # about the source, and the batch must carry on.
+            metrics.DOCUMENTS_PROCESSED.labels(
+                outcome="download_failed", method=str(document.document_format)
+            ).inc()
             return document
+        if result.changed:
+            metrics.DOCUMENTS_PROCESSED.labels(
+                outcome="downloaded", method=str(document.document_format)
+            ).inc()
 
         if extract_text and result.changed:
             await self._extract_text(document, downloader, extractor or TextExtractor())
@@ -113,6 +124,7 @@ class DocumentService:
     ) -> None:
         if not document.storage_key:
             return
+        started = time.monotonic()
         try:
             data = downloader.storage.read_bytes(document.storage_key)
             extraction = extractor.extract(data, document_format=document.document_format)
@@ -120,7 +132,19 @@ class DocumentService:
             logger.warning(
                 "document.extraction_failed", document_id=str(document.id), error=str(exc)
             )
+            metrics.DOCUMENTS_PROCESSED.labels(outcome="extraction_failed", method="FAILED").inc()
             return
+        elapsed = time.monotonic() - started
+        metrics.DOCUMENTS_PROCESSED.labels(outcome="success", method=str(extraction.method)).inc()
+        metrics.DOCUMENT_EXTRACTION_DURATION.labels(method=str(extraction.method)).observe(elapsed)
+        metrics.DOCUMENT_BYTES.observe(len(data))
+        # "required" means native text was too thin and OCR did not happen — either it
+        # is switched off or no engine is installed. It is counted because the difference
+        # between an unsearchable document and a searched one is invisible in the DB.
+        if extraction.ocr_used:
+            metrics.OCR_REQUIRED.labels(outcome="performed").inc()
+        elif extraction.char_count == 0:
+            metrics.OCR_REQUIRED.labels(outcome="required").inc()
 
         existing = await self.get_text(document.id)
         if existing is None:

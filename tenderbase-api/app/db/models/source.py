@@ -80,9 +80,19 @@ class MunicipalitySource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("slug", name="uq_municipality_sources_slug"),
         Index("ix_municipality_sources_active_priority", "active", "priority"),
         Index("ix_municipality_sources_health_status", "health_status"),
+        # The claim query filters on eligibility and orders by priority; without this
+        # it is a sequential scan of every source on every scheduler tick.
+        Index("ix_municipality_sources_claim_due", "active", "next_run_at"),
         CheckConstraint("priority >= 0 AND priority <= 1000", name="priority_range"),
         CheckConstraint("crawl_frequency_minutes >= 5", name="crawl_frequency_min"),
         CheckConstraint("rate_limit_per_minute > 0", name="rate_limit_positive"),
+        # A claim must be expiring: a row that names a job but carries no lease would
+        # stay unschedulable forever if that job died. Enforced in the database because
+        # the code that sets one sets the other, and a future caller that forgets is a
+        # bug that would otherwise present as "this source stopped crawling".
+        CheckConstraint(
+            "claim_job_id IS NULL OR claim_expires_at IS NOT NULL", name="claim_has_lease"
+        ),
         # The lifecycle is a closed set: an operator cannot invent a state that
         # the scheduler does not understand.
         CheckConstraint(
@@ -152,6 +162,22 @@ class MunicipalitySource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     health_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=HealthStatus.UNKNOWN
     )
+
+    # -- scheduling / claiming --------------------------------------------
+    #: When this source may next be claimed by a scheduler. The claim path sets it
+    #: forward (crawl interval x health backoff) inside the same transaction that
+    #: creates the job row, which is what makes "two scheduler replicas enqueue the
+    #: same source" impossible rather than merely unlikely. ``NULL`` means eligible
+    #: now, so a freshly registered or manually-run source needs no special case.
+    next_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    #: End of the current claim's lease. A claim without an expiry is a locked
+    #: source: if the worker is killed between claiming and running, nothing would
+    #: ever crawl it again. Reconciliation reclaims rows whose lease has passed.
+    claim_expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    #: The ``ingestion_jobs`` row holding the lease (not a foreign key on purpose:
+    #: ``ingestion_jobs.source_id`` already points here, and a second edge between
+    #: the same two tables would make table ordering circular for ``create_all``).
+    claim_job_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
 
     # -- politeness -------------------------------------------------------
     robots_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="RESPECT")

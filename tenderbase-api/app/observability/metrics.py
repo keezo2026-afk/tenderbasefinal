@@ -19,6 +19,7 @@ enums only, because unbounded labels are a memory-exhaustion DoS vector.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from prometheus_client import REGISTRY, Counter, Gauge, Histogram, Info
@@ -91,6 +92,40 @@ DOCUMENT_BYTES = Histogram(
     "tenderbase_document_bytes",
     "Size of processed documents in bytes.",
     buckets=(10_000, 100_000, 500_000, 1_000_000, 5_000_000, 25_000_000, 100_000_000),
+)
+
+# --- Data quality ----------------------------------------------------------
+# These extend the *label values* of the counters above (``INGESTION_ITEMS`` gains
+# ``found|unchanged|invalid|needs_review|duplicates|fuzzy_duplicates``,
+# ``DOCUMENTS_PROCESSED`` gains ``found|downloaded|failed``) rather than introducing
+# parallel counters for the same facts. Only genuinely new subjects get a metric here.
+
+OCR_REQUIRED = Counter(
+    "tenderbase_ingestion_ocr_required_total",
+    "Documents where native text extraction produced too little and OCR was required.",
+    ["outcome"],  # required | performed | unavailable | skipped
+)
+SOURCE_FRESHNESS_HOURS = Histogram(
+    "tenderbase_source_freshness_hours",
+    "Hours since each source's last successful run, sampled by the reconciliation pass.",
+    buckets=(0.5, 1, 3, 6, 12, 24, 36, 48, 72, 96, 168, 336, 720),
+)
+SOURCE_FRESHNESS = Gauge(
+    "tenderbase_source_freshness_records",
+    "Active sources by freshness classification (FRESH/AGING/STALE/NEVER_RUN/DISABLED).",
+    ["state"],
+)
+SCHEDULE_CLAIMS = Counter(
+    "tenderbase_schedule_claims_total",
+    "Source claims taken by the scheduler. ``contended`` means every due source was "
+    "already leased by another worker — normal once a second, a sign of overlap if it "
+    "dominates.",
+    ["outcome"],  # claimed | contended
+)
+RECOVERY_ACTIONS = Counter(
+    "tenderbase_recovery_actions_total",
+    "Repairs applied by the reconciliation pass, by action.",
+    ["action"],
 )
 
 # --- Worker / queue health ------------------------------------------------
@@ -198,8 +233,15 @@ def observe_run(
     updated: int = 0,
     skipped: int = 0,
     failed: int = 0,
+    counts: Mapping[str, int] | None = None,
 ) -> None:
-    """Record the result of one source run (called from the pipeline and workers)."""
+    """Record the result of one source run (called from the pipeline and workers).
+
+    ``counts`` carries the run's remaining per-record outcomes (``found``,
+    ``unchanged``, ``invalid``, ``needs_review``, ``duplicates``, ...) and is added to
+    the same ``INGESTION_ITEMS`` counter, so a new statistic is a new label value
+    rather than a new metric family.
+    """
     INGESTION_SOURCES.labels(outcome=outcome).inc()
     INGESTION_DURATION.observe(duration_seconds)
     INGESTION_JOBS.labels(status=outcome).inc()
@@ -208,6 +250,7 @@ def observe_run(
         ("updated", updated),
         ("skipped", skipped),
         ("failed", failed),
+        *(counts or {}).items(),
     ):
         if count:
             INGESTION_ITEMS.labels(outcome=name).inc(count)
@@ -231,6 +274,8 @@ def snapshot_gauges(values: dict[str, Any]) -> None:
         QUEUE_DEPTH.set(float(values["queue_depth"]))
     if "queue_running" in values:
         QUEUE_WORKERS.set(float(values["queue_running"]))
+    for state, count in (values.get("source_freshness") or {}).items():
+        SOURCE_FRESHNESS.labels(state=str(state)).set(float(count))
     for status, count in (values.get("source_failures_by_health") or {}).items():
         SOURCE_CONSECUTIVE_FAILURES.labels(health_status=str(status)).set(float(count))
     for state, count in (values.get("db_pool") or {}).items():
