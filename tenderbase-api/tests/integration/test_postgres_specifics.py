@@ -22,11 +22,9 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import func, select, text
 
-from app.db.base_class import JSONBType
 from app.db.models.document import Document
-from app.db.models.geography import Municipality
 from app.db.models.opportunity import ProcurementOpportunity
-from app.db.models.source import MunicipalitySource, SourceRun
+from app.db.models.source import SourceRun
 from app.enums import DataQuality, OpportunityStatus, ProcurementType
 from app.search.service import PostgresSearchBackend
 from app.utils.dates import utcnow
@@ -103,7 +101,6 @@ async def test_full_text_search_ranks_relevant_records_first(session, source, ma
     await session.commit()
 
     backend = PostgresSearchBackend()
-    tsquery = func.plainto_tsquery("english", "solar inverters")
     vector = backend._tsvector()
 
     # AND semantics: only the record containing both terms is a hit.
@@ -161,14 +158,20 @@ async def test_websearch_handles_prefix_matching(session, make_opportunity):
 async def test_trigram_similarity_finds_similar_titles(session, make_opportunity):
     existing = await make_opportunity(
         reference="PG/TRG/001",
-        title="Appointment of a competent service provider for the supply of electrical distribution boards",
+        title=(
+            "Appointment of a competent service provider for the supply of "
+            "electrical distribution boards"
+        ),
     )
     score = (
         await session.execute(
             select(
                 func.similarity(
                     ProcurementOpportunity.title,
-                    "Appointment of a competent service provider for supply of electrical distribution boards",
+                    (
+                        "Appointment of a competent service provider for supply "
+                        "of electrical distribution boards"
+                    ),
                 )
             ).where(ProcurementOpportunity.id == existing.id)
         )
@@ -207,7 +210,10 @@ async def test_fuzzy_dedup_layer_runs_on_postgres(session, make_opportunity):
 
     existing = await make_opportunity(
         reference="PG/TRG/020",
-        title="Appointment of a service provider for the construction of a storm water drainage system",
+        title=(
+            "Appointment of a service provider for the construction of a storm "
+            "water drainage system"
+        ),
     )
     record = build_record(
         existing,
@@ -307,7 +313,10 @@ async def test_check_constraints_are_enforced(session, source):
     session.add(run)
     with pytest.raises(Exception) as excinfo:
         await session.flush()
-    assert "ck_source_runs_items_found_non_negative" in str(excinfo.value).lower() or "check constraint" in str(excinfo.value).lower()
+    assert (
+        "ck_source_runs_items_found_non_negative" in str(excinfo.value).lower()
+        or "check constraint" in str(excinfo.value).lower()
+    )
     await session.rollback()
 
 
@@ -450,7 +459,10 @@ async def test_trigram_index_is_used_for_similar_title_lookup(session, make_oppo
 async def test_open_opportunity_partial_index_exists(session):
     definition = (
         await session.execute(
-            text("select indexdef from pg_indexes where indexname = 'ix_opportunities_open_closing'")
+            text(
+                "select indexdef from pg_indexes "
+                "where indexname = 'ix_opportunities_open_closing'"
+            )
         )
     ).scalar_one()
     assert "where ((status)::text = 'open'::text)" in definition.lower()

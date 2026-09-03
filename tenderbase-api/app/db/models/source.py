@@ -20,12 +20,20 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    true,
 )
-from sqlalchemy import true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
-from app.enums import ConnectorType, HealthStatus, JobStatus, ProcurementScope, SourceLifecycle, SourceType, VerificationStatus
+from app.enums import (
+    ConnectorType,
+    HealthStatus,
+    JobStatus,
+    ProcurementScope,
+    SourceLifecycle,
+    SourceType,
+    VerificationStatus,
+)
 
 
 class SourceConnector(UUIDPrimaryKeyMixin, TimestampMixin, Base):

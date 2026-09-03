@@ -22,13 +22,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.api.errors import register_exception_handlers
 from app.api.middleware import PublicRateLimitMiddleware, RequestContextMiddleware
 from app.api.v1.router import api_router
+from app.api.v1.routes.health import router as health_router
 from app.config import Settings, get_settings
 from app.db.session import dispose_engine, get_sessionmaker
 from app.logging import configure_logging, get_logger
@@ -206,6 +207,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router, prefix=cfg.api_v1_prefix)
+    # Health probes are mounted a second time at the application root
+    # (``/health/live``, ``/health/ready``). Container orchestrators, classic
+    # load balancers and the Docker ``HEALTHCHECK`` all want an unauthenticated
+    # path that does not carry the API version; keeping the canonical
+    # ``/api/v1/health*`` paths as well means neither audience has to be
+    # special-cased. They are hidden from OpenAPI to avoid duplicate tags.
+    app.include_router(health_router, include_in_schema=False)
     _mount_metrics(app, cfg)
 
     @app.get("/", include_in_schema=False)

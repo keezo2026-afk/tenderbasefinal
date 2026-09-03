@@ -47,6 +47,10 @@ from app.utils.hashing import contact_fingerprint
 logger = get_logger("tenderbase.pipeline")
 
 
+#: How many individual errors a run summary keeps inline.
+_STATS_ERROR_SAMPLE = 10
+
+
 @dataclass(slots=True)
 class RunStats:
     """Counters for one source run."""
@@ -70,6 +74,10 @@ class RunStats:
             "documents_found": self.documents_found,
             "uncertain_duplicates": self.uncertain_duplicates,
             "error_count": len(self.errors),
+            # A bounded projection, not the full list: this dict is stored in a
+            # JSONB column and rendered by the operations endpoints, while the
+            # complete error history belongs to ingestion_errors.
+            "errors": [error.as_dict() for error in self.errors[:_STATS_ERROR_SAMPLE]],
         }
 
 

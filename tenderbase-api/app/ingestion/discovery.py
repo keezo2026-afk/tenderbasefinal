@@ -3,11 +3,16 @@
 Two kinds of discovery:
 
 1. **Source discovery** — which configured sources are *due* to run, based on
-   crawl frequency, priority, health and activation state.
+   their lifecycle, pause flag, activation state, crawl frequency and health
+   backoff.
 2. **Target discovery** — delegating to a connector to enumerate the URLs it
    intends to fetch for a source.
 
-Discovery never invents sources. It only schedules what operators registered.
+Discovery never invents sources. It only schedules what operators registered and
+then *activated*: a source that nobody has verified, or that somebody paused, is
+skipped even though ``active`` is still true. The skip is counted and logged, so
+"why is this source not crawling" is answerable from the worker log rather than
+being a mystery.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import DiscoveryTarget, ProcurementConnector, SourceContext
 from app.db.models.source import MunicipalitySource
-from app.enums import HealthStatus
+from app.enums import HealthStatus, SourceLifecycle
 from app.logging import get_logger
 from app.utils.dates import utcnow
 
@@ -37,9 +42,19 @@ BACKOFF_MULTIPLIER: dict[HealthStatus, float] = {
 
 
 async def find_due_sources(
-    session: AsyncSession, *, limit: int = 50, include_inactive: bool = False
+    session: AsyncSession,
+    *,
+    limit: int = 50,
+    include_inactive: bool = False,
+    respect_lifecycle: bool = True,
 ) -> Sequence[MunicipalitySource]:
-    """Return sources whose next crawl is due, highest priority first."""
+    """Return sources whose next crawl is due, highest priority first.
+
+    ``include_inactive`` exists for manual, operator-initiated runs (``--source``
+    on the CLI): a human who says "crawl this one now" means it. The scheduler
+    never passes it, and both paths still refuse a paused source — pausing is a
+    statement about the source, not about who is asking.
+    """
     now = utcnow()
     stmt = select(MunicipalitySource)
     if not include_inactive:
@@ -50,18 +65,44 @@ async def find_due_sources(
 
     candidates = (await session.execute(stmt)).scalars().all()
     due: list[MunicipalitySource] = []
+    skipped_lifecycle = 0
     for source in candidates:
-        if is_due(source, now=now):
-            due.append(source)
+        if not is_due(source, now=now, respect_lifecycle=respect_lifecycle):
+            if respect_lifecycle and not _schedulable_lifecycle(source):
+                skipped_lifecycle += 1
+            continue
+        due.append(source)
         if len(due) >= limit:
             break
-    logger.info("discovery.due_sources", candidates=len(candidates), due=len(due))
+    logger.info(
+        "discovery.due_sources",
+        candidates=len(candidates),
+        due=len(due),
+        skipped_not_activated=skipped_lifecycle,
+    )
     return due
 
 
-def is_due(source: MunicipalitySource, *, now=None) -> bool:
-    """Whether a source should run now, accounting for health backoff."""
+def _schedulable_lifecycle(source: MunicipalitySource) -> bool:
+    lifecycle = SourceLifecycle.parse(source.lifecycle_status)
+    return bool(lifecycle and lifecycle.schedulable)
+
+
+def is_due(source: MunicipalitySource, *, now=None, respect_lifecycle: bool = True) -> bool:
+    """Whether a source should run now.
+
+    Order matters and each test answers a different question:
+
+    * paused — an explicit human stop, overrides everything;
+    * lifecycle — the source was never activated (or was retired), so the
+      scheduler must not touch it even though ``active`` is true;
+    * crawl interval × health backoff — the ordinary throttle.
+    """
     moment = now or utcnow()
+    if source.paused_at is not None:
+        return False
+    if respect_lifecycle and not _schedulable_lifecycle(source):
+        return False
     if source.last_run_at is None:
         return True
     multiplier = BACKOFF_MULTIPLIER.get(HealthStatus.parse(source.health_status), 1.0)

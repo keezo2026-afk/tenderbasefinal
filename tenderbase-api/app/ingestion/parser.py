@@ -33,6 +33,16 @@ class StageError:
     retryable: bool = False
     context: dict = field(default_factory=dict)
 
+    def as_dict(self) -> dict:
+        """JSON-safe projection, stored in ``source_runs.stats`` and the job result."""
+        return {
+            "stage": str(self.stage),
+            "code": self.code,
+            "message": self.message[:500],
+            "url": self.url,
+            "retryable": self.retryable,
+        }
+
     @classmethod
     def from_exception(
         cls, exc: Exception, *, stage: ErrorStage, url: str | None = None
@@ -43,7 +53,7 @@ class StageError:
                 code=exc.code,
                 message=str(exc)[:2000],
                 url=url,
-                retryable=exc.code in {"FETCH_RETRYABLE", "SERVICE_UNAVAILABLE"},
+                retryable=bool(getattr(exc, "retryable", False)),
                 context=dict(exc.details),
             )
         return cls(

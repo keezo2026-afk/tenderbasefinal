@@ -17,10 +17,10 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.api.auth import Principal, api_access
-from app.api.dependencies import MetaDep, SessionDep, SettingsDep
+from app.api.dependencies import MetaDep, SessionDep
 from app.config import get_settings
 from app.db.models.security import ApiKey
 from app.schemas.common import DataResponse, ListResponse, PaginationMeta

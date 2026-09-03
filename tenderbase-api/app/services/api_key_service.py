@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models.security import SCOPE_PRESETS, ApiKey
-from app.enums import API_KEY_SCOPES, ApiKeyStatus, ApiKeyScope
+from app.enums import API_KEY_SCOPES, ApiKeyScope, ApiKeyStatus
 from app.errors import TenderBaseError, ValidationError
 from app.logging import get_logger
 from app.utils.dates import ensure_utc, utcnow

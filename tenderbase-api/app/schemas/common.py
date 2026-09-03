@@ -122,10 +122,18 @@ class SortOrder(BaseModel):
 
 
 class HealthComponent(BaseModel):
+    """One dependency's verdict.
+
+    ``required`` distinguishes "this must work for us to serve traffic" from
+    "nice to have": readiness only fails on unhealthy *required* components,
+    while ``/health`` reports both so an operator sees the whole picture.
+    """
+
     name: str
     status: str
     detail: str | None = None
     latency_ms: float | None = None
+    required: bool = True
 
 
 class HealthResponse(BaseModel):

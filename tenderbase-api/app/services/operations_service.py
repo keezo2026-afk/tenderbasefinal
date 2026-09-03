@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.ingestion import IngestionError
@@ -248,7 +248,9 @@ class OperationsService:
 
             raise ValidationError("source_id must be a UUID", code="INVALID_ID") from exc
         source = (
-            await self.session.execute(select(MunicipalitySource).where(MunicipalitySource.id == identifier))
+            await self.session.execute(
+                select(MunicipalitySource).where(MunicipalitySource.id == identifier)
+            )
         ).scalars().first()
         if source is None:
             raise SourceNotFoundError(details={"source_id": str(identifier)})
@@ -338,14 +340,19 @@ class OperationsService:
         if run.status == str(JobStatus.RUNNING):
             return "RUNNING", "The run has not finished."
         if run.items_found == 0:
-            fatal = [e for e in errors if e.stage in (str(ErrorStage.DISCOVERY), str(ErrorStage.FETCH))]
+            fatal = [
+                e
+                for e in errors
+                if e.stage in (str(ErrorStage.DISCOVERY), str(ErrorStage.FETCH))
+            ]
             if fatal:
                 return "UNREACHABLE", f"{fatal[0].code}: {fatal[0].message}"
             return "EMPTY", "The source answered but published no items."
         if run.status == str(JobStatus.FAILED):
             if run.items_created or run.items_updated:
                 return "PARTIAL", (
-                    f"{run.items_created + run.items_updated} record(s) persisted before the failure; "
+                    f"{run.items_created + run.items_updated} record(s) persisted "
+                    f"before the failure; "
                     f"{run.items_failed} item(s) failed."
                 )
             head = errors[0] if errors else None

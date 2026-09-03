@@ -25,8 +25,8 @@ requires a key when ``enforce_api_keys`` is on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated, Any
 from urllib.parse import unquote
 
@@ -34,10 +34,9 @@ from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_session
-
 from app.config import Settings, get_settings
 from app.db.models.security import ApiKey
+from app.db.session import get_session
 from app.enums import SCOPE_REQUIREMENTS, ApiKeyScope
 from app.errors import RateLimitedError
 from app.logging import get_logger

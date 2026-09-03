@@ -30,7 +30,65 @@ async def test_liveness_does_no_io(client):
 
 async def test_readiness_probe(client):
     response = await client.get("/api/v1/health/ready")
-    assert response.status_code in {200, 503}
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ready"
+    database = next(c for c in body["components"] if c["name"] == "database")
+    assert database["status"] == "healthy"
+    assert database["required"] is True
+
+
+async def test_health_probes_are_also_mounted_at_the_root(client):
+    """Orchestrators and the container HEALTHCHECK probe ``/health/live``.
+
+    The versioned paths stay canonical; the root ones exist so an
+    infrastructure component that cannot be configured with a prefix still
+    works. Both must return the same shape.
+    """
+    def verdict(body: dict) -> tuple:
+        # Timestamps and latencies obviously differ between two calls; the
+        # verdict and its components must not.
+        return (
+            body["status"],
+            tuple((c["name"], c["status"], c["required"]) for c in body["components"]),
+        )
+
+    for root, versioned in [
+        ("/health", "/api/v1/health"),
+        ("/health/live", "/api/v1/health/live"),
+        ("/health/ready", "/api/v1/health/ready"),
+    ]:
+        at_root = await client.get(root)
+        canonical = await client.get(versioned)
+        assert at_root.status_code == 200, root
+        assert verdict(at_root.json()) == verdict(canonical.json()), root
+
+
+async def test_optional_cache_component_does_not_block_traffic(client):
+    """With rate limiting off, Redis is not required — and not even probed."""
+    body = (await client.get("/api/v1/health")).json()
+    cache = next(c for c in body["components"] if c["name"] == "cache")
+    assert cache["required"] is False
+    assert cache["status"] == "disabled"
+    assert body["status"] == "healthy"
+
+
+async def test_readiness_fails_when_redis_is_load_bearing(make_client):
+    """Turn rate limiting on, point Redis at a dead port: readiness must say so.
+
+    Silent fail-open is the right behaviour for a request path, but a probe that
+    keeps answering 200 while the limiter is dead hides the outage from
+    monitoring forever.
+    """
+    async with make_client(rate_limit_enabled=True, redis_url="redis://127.0.0.1:1/0") as client:
+        ready = await client.get("/api/v1/health/ready")
+        assert ready.status_code == 503
+        cache = next(c for c in ready.json()["components"] if c["name"] == "cache")
+        assert cache["required"] is True
+        assert cache["status"] == "unhealthy"
+        # Liveness deliberately ignores dependencies: a pod whose cache is down
+        # must not be killed and restarted in a loop.
+        assert (await client.get("/api/v1/health/live")).status_code == 200
 
 
 async def test_request_id_is_echoed_and_generated(client):

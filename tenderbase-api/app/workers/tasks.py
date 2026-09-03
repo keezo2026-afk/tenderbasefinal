@@ -1,12 +1,24 @@
 """Worker tasks.
 
 Each task is small, idempotent and isolated: a failure in one source or one
-document never aborts the batch. Retries and backoff are handled by ARQ using
-the settings declared in :mod:`app.workers.scheduler`.
+document never aborts the batch. Every task is safe to run twice — ingestion is
+keyed on (source, external id) and document processing checks the content hash —
+which is what makes ARQ's retry-then-defer strategy in :mod:`app.workers.retry`
+affordable.
+
+Tasks come in two flavours:
+
+* ``ingest_source`` is per-source work with a row in ``ingestion_jobs``, so it
+  can be retried with a backoff and must record *why* it gave up;
+* the cron tasks (``schedule_due_sources``, ``process_documents``,
+  ``monitor_source_health``) are self-rescheduling. Retrying one of those is
+  pointless — the schedule *is* the retry — so they log and return counters
+  instead of raising.
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +36,7 @@ from app.ingestion.pipeline import IngestionPipeline
 from app.logging import get_logger, job_id_ctx
 from app.services.document_service import DocumentService
 from app.utils.dates import utcnow
+from app.workers.retry import defer_or_fail
 
 logger = get_logger("tenderbase.workers.tasks")
 
@@ -74,9 +87,30 @@ async def ingest_source(ctx: dict[str, Any], source_id: str, *, job_id: str | No
                 job.started_at = utcnow()
                 job.attempt += 1
 
-            async with HTTPFetcher() as fetcher:
-                pipeline = IngestionPipeline(fetcher=fetcher)
-                run = await pipeline.run_source(session, source, job=job, commit=False)
+            try:
+                async with HTTPFetcher() as fetcher:
+                    pipeline = IngestionPipeline(fetcher=fetcher)
+                    run = await pipeline.run_source(session, source, job=job, commit=False)
+            except Exception as exc:  # noqa: BLE001 - the queue owns this retry
+                # The pipeline isolates *source* failures and reports them as data;
+                # anything that escapes it is an infrastructure fault (database,
+                # event loop, a bug). Defer and try again rather than losing the job.
+                await session.rollback()
+                if job is not None:
+                    job.status = str(JobStatus.RETRYING)
+                    job.error_message = f"{type(exc).__name__}: {exc}"[:2000]
+                await session.commit()
+                logger.exception("task.ingest_crashed", source_id=source_id, error=str(exc))
+                raise _defer(ctx, base=get_settings().worker_retry_backoff_seconds) from exc
+
+            if run.status == str(JobStatus.FAILED):
+                # Failures are data at this level; convert them into a queue-level
+                # decision (backoff + jitter, or give up) before returning.
+                await defer_or_fail(
+                    ctx, run=run, job=job, settings=get_settings(), session=session
+                )
+
+            await _record_queue_attempt(ctx, job)
 
             return {
                 "status": run.status,
@@ -88,6 +122,25 @@ async def ingest_source(ctx: dict[str, Any], source_id: str, *, job_id: str | No
             }
     finally:
         job_id_ctx.reset(token)
+
+
+def _defer(ctx: dict[str, Any], *, base: float) -> Exception:
+    """Build the ARQ "run this later" control-flow error for the next attempt."""
+    from arq.worker import Retry
+
+    from app.utils.backoff import exponential_backoff_seconds
+
+    delay = exponential_backoff_seconds(
+        max(0, int(ctx.get("job_try", 1)) - 1), base_seconds=base, max_seconds=900.0
+    )
+    return Retry(timedelta(seconds=delay))
+
+
+async def _record_queue_attempt(ctx: dict[str, Any], job: IngestionJob | None) -> None:
+    """Stamp the ARQ attempt count onto the job row once a run succeeds."""
+    if job is None:
+        return
+    job.attempt = max(int(job.attempt or 0), int(ctx.get("job_try", 1)))
 
 
 async def schedule_due_sources(ctx: dict[str, Any], limit: int = 25) -> dict:
@@ -109,6 +162,9 @@ async def schedule_due_sources(ctx: dict[str, Any], limit: int = 25) -> dict:
             session.add(job)
             await session.flush()
             try:
+                # No ``unique_id`` here on purpose: ARQ keeps a job's payload
+                # until ``keep_result`` expires, so a permanent id would make
+                # every later scheduled run of this source a silent no-op.
                 job.queue_job_id = await queue.enqueue(
                     "ingest_source", str(source.id), job_id=str(job.id)
                 )

@@ -125,7 +125,6 @@ class SourceVerifier:
         checks: list[CheckResult] = []
         http_status: int | None = None
         items: list[Any] = []
-        listing_result: DiscoveryTarget | None = None
 
         checks.append(self._check_connector(context))
         url_check = self._check_url(context)
@@ -141,7 +140,6 @@ class SourceVerifier:
             checks.append(target_error or self._check_targets(context, targets))
 
         if targets:
-            listing_result = targets[0]
             fetch_check, response = await self._check_access(connector, context, targets[0])
             checks.append(fetch_check)
             if response is not None:
@@ -176,10 +174,16 @@ class SourceVerifier:
         warnings = [c for c in checks if c.status == CHECK_WARNING]
         if blocking:
             status = str(VerificationStatus.FAILED)
-            summary = f"{len(blocking)} required check(s) failed: {', '.join(c.name for c in blocking)}"
+            summary = (
+                f"{len(blocking)} required check(s) failed:"
+                f" {', '.join(c.name for c in blocking)}"
+            )
         elif warnings:
             status = str(VerificationStatus.PASSED_WITH_WARNINGS)
-            summary = f"Verified with {len(warnings)} warning(s): {', '.join(c.name for c in warnings)}"
+            summary = (
+                f"Verified with {len(warnings)} warning(s):"
+                f" {', '.join(c.name for c in warnings)}"
+            )
         else:
             status = str(VerificationStatus.PASSED)
             summary = "All applicable checks passed"
@@ -248,7 +252,10 @@ class SourceVerifier:
                 evidence={**evidence, "undeclared_keys": unknown},
             )
         return CheckResult(
-            name="connector", status=CHECK_PASSED, detail=f"{cls.key} accepts the config", evidence=evidence
+            name="connector",
+            status=CHECK_PASSED,
+            detail=f"{cls.key} accepts the config",
+            evidence=evidence,
         )
 
     def _check_url(self, context: SourceContext) -> CheckResult:
@@ -359,7 +366,8 @@ class SourceVerifier:
                     name="access",
                     status=CHECK_FAILED,
                     detail=(
-                        f"HTTP {status_code}: the content is access-controlled. TenderBase does not "
+                        f"HTTP {status_code}: the content is access-controlled. "
+                        "TenderBase does not "
                         "bypass authentication, so this source cannot be ingested as configured."
                     ),
                     evidence={"url": target.url, "http_status": status_code},
@@ -486,7 +494,9 @@ class SourceVerifier:
                     f"{accepted}/{min(len(usable), self.sample_items)} "
                     "sampled item(s) normalized and validated"
                     if accepted
-                    else "No sampled item passed validation — records would be rejected by ingestion."
+                    else
+                    "No sampled item passed validation — records would be "
+                    "rejected by ingestion."
                 ),
                 evidence={
                     "sampled": min(len(usable), self.sample_items),
@@ -502,7 +512,10 @@ class SourceVerifier:
             return CheckResult(
                 name="robots",
                 status=CHECK_WARNING,
-                detail="robots.txt is explicitly ignored for this source; require written permission.",
+                detail=(
+                    "robots.txt is explicitly ignored for this source;"
+                    " require written permission."
+                ),
                 required=False,
                 evidence={"robots_policy": "IGNORE"},
             )
@@ -520,7 +533,11 @@ class SourceVerifier:
         )
 
     async def _check_detail(
-        self, connector: ProcurementConnector, context: SourceContext, items: list[Any], checks: list[CheckResult]
+        self,
+        connector: ProcurementConnector,
+        context: SourceContext,
+        items: list[Any],
+        checks: list[CheckResult],
     ) -> None:
         started = time.perf_counter()
         listing_urls = {target.url for target in await connector.discover(context)}

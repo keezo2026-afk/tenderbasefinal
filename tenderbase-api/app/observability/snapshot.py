@@ -46,7 +46,10 @@ async def data_volume_gauges(session: AsyncSession) -> dict[str, object]:
     try:
         rows = (
             await session.execute(
-                select(MunicipalitySource.health_status, func.max(MunicipalitySource.consecutive_failures))
+                select(
+                    MunicipalitySource.health_status,
+                    func.max(MunicipalitySource.consecutive_failures),
+                )
                 .group_by(MunicipalitySource.health_status)
             )
         ).all()
@@ -85,7 +88,9 @@ async def queue_depth(settings: Settings | None = None) -> dict[str, int]:
         return {"queue_depth": 0, "queue_running": 0}
 
 
-async def refresh(settings: Settings | None = None, *, include_queue: bool = True) -> dict[str, object]:
+async def refresh(
+    settings: Settings | None = None, *, include_queue: bool = True
+) -> dict[str, object]:
     """Recompute and publish all gauges. Returns the values for callers/tests."""
     from app.db.session import session_scope
 

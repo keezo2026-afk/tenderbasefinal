@@ -26,9 +26,8 @@ from datetime import datetime
 from sqlalchemy import CheckConstraint, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base_class import JSONBType, Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.db.base_class import Base, JSONBType, TimestampMixin, UUIDPrimaryKeyMixin
 from app.enums import ALL_READ_SCOPES, ApiKeyScope, ApiKeyStatus
-
 
 
 class ApiKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -63,7 +62,10 @@ class ApiKey(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     #: Hex HMAC-SHA256 digest of the raw key. **The only representation stored.**
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default=ApiKeyStatus.ACTIVE, server_default=str(ApiKeyStatus.ACTIVE)
+        String(16),
+        nullable=False,
+        default=ApiKeyStatus.ACTIVE,
+        server_default=str(ApiKeyStatus.ACTIVE),
     )
     #: JSON list of scope strings (see :data:`app.enums.API_KEY_SCOPES`).
     scopes: Mapped[list | None] = mapped_column(JSONBType, nullable=True)

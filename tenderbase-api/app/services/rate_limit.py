@@ -145,7 +145,9 @@ class RedisWindowLimiter:
     def __init__(self, client: Any, *, namespace: str = "tenderbase:ratelimit") -> None:
         self.client = client
         self.namespace = namespace
-        self._script = client.register_script(_LUA_WINDOW) if hasattr(client, "register_script") else None
+        self._script = (
+            client.register_script(_LUA_WINDOW) if hasattr(client, "register_script") else None
+        )
 
     @classmethod
     def from_url(cls, url: str, *, namespace: str = "tenderbase:ratelimit") -> RedisWindowLimiter:

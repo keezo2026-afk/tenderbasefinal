@@ -147,7 +147,9 @@ HTTP_INPROGRESS = Gauge(
 )
 
 
-def observe_http_request(*, method: str, route: str, status_code: int, duration_seconds: float) -> None:
+def observe_http_request(
+    *, method: str, route: str, status_code: int, duration_seconds: float
+) -> None:
     """Record one request. ``route`` must be a template, never a raw path."""
     status_class = f"{status_code // 100}xx"
     HTTP_REQUESTS.labels(method=method, route=route, status_class=status_class).inc()

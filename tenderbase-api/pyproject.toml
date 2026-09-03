@@ -24,6 +24,9 @@ dependencies = [
     "arq>=0.26",
     "structlog>=24.1",
     "python-slugify>=8.0",
+    # /metrics is part of the API image (there is no sidecar), so the client
+    # library is a runtime dependency, not a dev extra.
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -61,7 +62,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 
 import app.connectors  # noqa: F401,E402 - registers connectors
-from app.config import get_settings  # noqa: E402
+from app.config import Settings, get_settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.models.geography import Municipality, Province  # noqa: E402
 from app.db.models.opportunity import ProcurementOpportunity  # noqa: E402
@@ -222,6 +223,36 @@ async def client(engine) -> AsyncIterator[AsyncClient]:
     application.dependency_overrides.clear()
 
 
+@pytest.fixture
+def make_client(engine):  # noqa: ANN201 - async context-manager factory
+    """Build an HTTP client bound to an app created with specific settings.
+
+    ``client`` covers the default configuration. Tests that need a different one
+    (authentication enabled, a dead Redis, a smaller rate limit) use this, so
+    they never mutate process-global settings and leak into other tests: the
+    settings object is injected through the very dependency the app resolves.
+    """
+
+    @asynccontextmanager
+    async def _make(**overrides):  # noqa: ANN003, ANN202
+        cfg = Settings(app_env="test", **overrides)
+        application = create_app(cfg)
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+
+        async def override_session() -> AsyncIterator[AsyncSession]:
+            async with factory() as session:
+                yield session
+
+        application.dependency_overrides[get_session] = override_session
+        application.dependency_overrides[get_settings] = lambda: cfg
+        transport = ASGITransport(app=application)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+            yield http_client
+        application.dependency_overrides.clear()
+
+    return _make
+
+
 # --- Domain fixtures ------------------------------------------------------
 
 
@@ -364,6 +395,48 @@ def mock_fetcher() -> Callable[[dict[str, tuple[int, str, str]]], HTTPFetcher]:
         return HTTPFetcher(client=client)
 
     return _build
+
+
+@pytest.fixture(scope="session")
+def redis_url() -> str | None:
+    """A Redis to run live queue tests against, or ``None`` when there is none.
+
+    Uses database 15 of the configured server so the suite can flush the whole
+    thing without touching anything else running on that host. ``REDIS_URL``
+    decides the host/port; a socket probe decides whether the tests run at all.
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    configured = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
+    parts = urlsplit(configured)
+    host, port = parts.hostname or "localhost", parts.port or 6379
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            pass
+    except OSError:
+        return None
+    return f"redis://{host}:{port}/15"
+
+
+@pytest.fixture
+async def worker_database(engine):  # noqa: ANN201 - yields the engine it installed
+    """Point the *process-wide* engine at the test database.
+
+    Worker tasks call :func:`app.db.session.session_scope`, which has no session
+    injected — it uses the same global the API and CLI use. Without this they
+    would open their own engine against ``DATABASE_URL`` and either miss the
+    tables or write into a real database. The previous globals are restored on
+    teardown so tests that follow are unaffected.
+    """
+    from app.db import session as session_module
+
+    previous = (session_module._engine, session_module._sessionmaker)
+    session_module.override_engine(engine)
+    try:
+        yield engine
+    finally:
+        session_module._engine, session_module._sessionmaker = previous
 
 
 # --- helpers --------------------------------------------------------------

@@ -82,7 +82,11 @@ class SourceVerificationService:
         except ValueError as exc:
             raise ValidationError("source_id must be a UUID", code="INVALID_ID") from exc
         source = (
-            (await self.session.execute(select(MunicipalitySource).where(MunicipalitySource.id == identifier)))
+            (
+                await self.session.execute(
+                    select(MunicipalitySource).where(MunicipalitySource.id == identifier)
+                )
+            )
             .scalars()
             .first()
         )
@@ -107,7 +111,9 @@ class SourceVerificationService:
         async with AsyncExitStack() as stack:
             if owns_fetcher:
                 fetcher = await stack.enter_async_context(HTTPFetcher(settings=self.settings))
-            verifier = SourceVerifier(fetcher=fetcher, settings=self.settings, sample_items=sample_items)
+            verifier = SourceVerifier(
+                fetcher=fetcher, settings=self.settings, sample_items=sample_items
+            )
             report: VerificationReport = await verifier.verify(context)
 
         outcome = VerificationOutcome(
@@ -144,7 +150,10 @@ class SourceVerificationService:
 
         # Discovery produced nothing usable => the source cannot currently be
         # collected. Record it, and stop scheduling it if it was scheduled.
-        passed = report.status in (str(VerificationStatus.PASSED), str(VerificationStatus.PASSED_WITH_WARNINGS))
+        passed = report.status in (
+            str(VerificationStatus.PASSED),
+            str(VerificationStatus.PASSED_WITH_WARNINGS),
+        )
         if passed and source.lifecycle_status in (
             str(SourceLifecycle.DISCOVERED),
             str(SourceLifecycle.PENDING_VERIFICATION),

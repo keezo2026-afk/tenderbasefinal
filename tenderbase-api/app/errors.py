@@ -13,6 +13,12 @@ class TenderBaseError(Exception):
     """Base class for all TenderBase errors."""
 
     code: str = "INTERNAL_ERROR"
+    #: Whether running the same operation again could plausibly succeed.
+    #: Ingestion uses this to choose between "back off and retry" and "record the
+    #: failure, a human has to change something". Anything that is a fact about
+    #: configuration (a missing connector, a refused URL, a malformed document)
+    #: must stay False, or a worker will spend its life retrying a typo.
+    retryable: bool = False
     http_status: int = 500
     message: str = "An unexpected error occurred"
 
@@ -78,6 +84,7 @@ class RateLimitedError(TenderBaseError):
 
 class ServiceUnavailableError(TenderBaseError):
     code = "SERVICE_UNAVAILABLE"
+    retryable = True
     http_status = 503
     message = "Service temporarily unavailable"
 
@@ -106,6 +113,7 @@ class FetchError(ConnectorError):
 
 
 class RetryableFetchError(FetchError):
+    retryable = True
     """Transient fetch failure — worth retrying with backoff."""
 
     code = "FETCH_RETRYABLE"

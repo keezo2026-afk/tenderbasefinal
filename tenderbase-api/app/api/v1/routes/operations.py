@@ -77,7 +77,9 @@ async def source_run_history(
     payload = [RunReportRead(**report.as_dict()) for report in reports]
     return ListResponse[RunReportRead](
         data=payload,
-        pagination=PaginationMeta.build(page=1, page_size=max(len(payload), 1), total_items=len(payload)),
+        pagination=PaginationMeta.build(
+            page=1, page_size=max(len(payload), 1), total_items=len(payload)
+        ),
         meta=meta,
     )
 
@@ -97,7 +99,9 @@ async def failed_runs(
     payload = [RunReportRead(**report.as_dict()) for report in reports]
     return ListResponse[RunReportRead](
         data=payload,
-        pagination=PaginationMeta.build(page=1, page_size=max(len(payload), 1), total_items=len(payload)),
+        pagination=PaginationMeta.build(
+            page=1, page_size=max(len(payload), 1), total_items=len(payload)
+        ),
         meta=meta,
     )
 
@@ -121,7 +125,9 @@ async def unhealthy_sources(
     payload = [SourceHealthSnapshot.model_validate(row) for row in rows]
     return ListResponse[SourceHealthSnapshot](
         data=payload,
-        pagination=PaginationMeta.build(page=1, page_size=max(len(payload), 1), total_items=len(payload)),
+        pagination=PaginationMeta.build(
+            page=1, page_size=max(len(payload), 1), total_items=len(payload)
+        ),
         meta=meta,
     )
 
@@ -149,7 +155,9 @@ async def duplicate_review_queue(
     payload = [DuplicateCandidate.model_validate(item.__dict__) for item in candidates]
     return ListResponse[DuplicateCandidate](
         data=payload,
-        pagination=PaginationMeta.build(page=1, page_size=max(len(payload), 1), total_items=len(payload)),
+        pagination=PaginationMeta.build(
+            page=1, page_size=max(len(payload), 1), total_items=len(payload)
+        ),
         meta=meta,
     )
 
@@ -179,7 +187,9 @@ async def last_verification(
             "verification_status": source.verification_status,
             "lifecycle_status": source.lifecycle_status,
             "verified_at": source.verified_at.isoformat() if source.verified_at else None,
-            "verification_at": source.verification_at.isoformat() if source.verification_at else None,
+            "verification_at": (
+                source.verification_at.isoformat() if source.verification_at else None
+            ),
             "verification_duration_ms": source.verification_duration_ms,
             "verification_http_status": source.verification_http_status,
             "report": source.verification_result,
