@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     http_respect_robots: bool = True
     http_default_rate_limit_per_minute: int = 30
     http_allow_private_networks: bool = False
+    #: Ports an outbound URL may name. The default is the small set of web ports
+    #: municipalities actually use; a source on a non-standard port is refused
+    #: rather than silently fetched, because an unexpected port is exactly what
+    #: an SSRF attempt through a compromised listing page looks like. Widen this
+    #: per deployment (and record why) instead of loosening the guard.
+    http_allowed_ports: str = "80,443,8080,8443"
 
     # -- Documents --------------------------------------------------------
     document_storage_backend: Literal["local", "s3"] = "local"
@@ -146,6 +152,22 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip().startswith("["):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("http_allowed_ports")
+    @classmethod
+    def _parse_ports(cls, value: str) -> str:
+        kept: list[int] = []
+        for part in value.replace(";", ",").split(","):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            if not candidate.isdigit() or not (1 <= int(candidate) <= 65535):
+                raise ValueError(f"HTTP_ALLOWED_PORTS must be a comma list of ports, got {part!r}")
+            if int(candidate) not in kept:
+                kept.append(int(candidate))
+        if not kept:
+            raise ValueError("HTTP_ALLOWED_PORTS must list at least one port")
+        return ",".join(str(port) for port in sorted(kept))
 
     @field_validator("log_level")
     @classmethod
@@ -235,6 +257,11 @@ class Settings(BaseSettings):
         if self.rate_limit_enabled is None:
             return self.app_env in ("production", "staging")
         return self.rate_limit_enabled
+
+    @property
+    def allowed_ports(self) -> frozenset[int]:
+        """Parsed :attr:`http_allowed_ports`, for :func:`app.utils.urls.validate_url`."""
+        return frozenset(int(part) for part in self.http_allowed_ports.split(",") if part)
 
     @property
     def key_pepper(self) -> str:

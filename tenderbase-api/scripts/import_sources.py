@@ -37,6 +37,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.connectors.registry import registered_keys
 from app.db.models.geography import Municipality, Province
 from app.db.models.source import MunicipalitySource
@@ -66,7 +67,11 @@ async def import_sources(path: Path, *, allow_unverified_urls: bool = False) -> 
                 stats["skipped"] += 1
                 continue
 
-            check = validate_url(definition.base_url, check_dns=False)
+            check = validate_url(
+                definition.base_url,
+                check_dns=False,
+                allowed_ports=get_settings().allowed_ports,
+            )
             if not check.ok and not allow_unverified_urls:
                 logger.error("sources.rejected_url", name=definition.name, reason=check.reason)
                 stats["skipped"] += 1

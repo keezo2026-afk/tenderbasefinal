@@ -12,12 +12,18 @@ url    DNS resolves, scheme/host are safe (SSRF policy applied)
 access the listing URL answers with a success status
 robots our user-agent is permitted to fetch the paths we need
 connector the configured connector key exists and accepts the config
-listing  the connector discovers items from the configured paths
-detail   linked detail pages are fetchable and parseable
-documents  document links resolve with a plausible content type
+listing  the connector discovered URLs to fetch from the configured paths
+parse    a fetched listing page yields structurally valid rows
+detail   linked detail pages are fetchable and non-empty
+documents  document links were found on the sampled items
 pagination a second page is reachable and terminates
 parser  items normalize + validate (i.e. they are usable, not just present)
 =====  =========================================================
+
+A check's *weight* is a property of the check, not of its outcome: the names in
+``REQUIRED_CHECKS`` block a passing verdict when they fail, the ones in
+``OPTIONAL_CHECKS`` never do. ``CheckResult`` derives ``required`` from the name so
+the table, the constants and the verdict cannot drift apart.
 
 Each check yields ``PASSED``/``WARNING``/``FAILED``/``SKIPPED`` plus structured
 evidence. A source is only ``PASSED`` when no *required* check failed; optional
@@ -38,7 +44,7 @@ from app.connectors.base import DiscoveryTarget, ProcurementConnector, SourceCon
 from app.connectors.registry import get_connector_class
 from app.enums import VerificationStatus
 from app.errors import TenderBaseError
-from app.ingestion.fetcher import FetchPolicy
+from app.ingestion.fetcher import RETRYABLE_STATUS, FetchPolicy
 from app.logging import get_logger
 from app.utils.urls import validate_url
 
@@ -50,7 +56,7 @@ CHECK_FAILED = "FAILED"
 CHECK_SKIPPED = "SKIPPED"
 
 #: Checks whose failure makes the whole source unverifiable.
-REQUIRED_CHECKS = frozenset({"url", "access", "connector", "listing", "parser"})
+REQUIRED_CHECKS = frozenset({"url", "access", "connector", "listing", "parse", "parser"})
 #: Checks that may legitimately not apply to a given source.
 OPTIONAL_CHECKS = frozenset({"robots", "detail", "documents", "pagination"})
 
@@ -67,13 +73,18 @@ class CheckResult:
     name: str
     status: str
     detail: str
-    required: bool = True
+    #: ``None`` means "derive it from :data:`REQUIRED_CHECKS`" — the usual case.
+    required: bool | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
     duration_ms: int = 0
 
+    def __post_init__(self) -> None:
+        if self.required is None:
+            self.required = self.name in REQUIRED_CHECKS
+
     @property
     def blocking(self) -> bool:
-        return self.required and self.status == CHECK_FAILED
+        return bool(self.required) and self.status == CHECK_FAILED
 
 
 @dataclass(slots=True)
@@ -156,7 +167,6 @@ class SourceVerifier:
                     name="detail",
                     status=CHECK_SKIPPED,
                     detail="No items were parsed, so detail pages could not be sampled.",
-                    required=False,
                 )
             )
             checks.append(
@@ -164,7 +174,6 @@ class SourceVerifier:
                     name="documents",
                     status=CHECK_SKIPPED,
                     detail="No items were parsed, so document links could not be sampled.",
-                    required=False,
                 )
             )
         if connector is not None:
@@ -248,7 +257,6 @@ class SourceVerifier:
                 name="connector",
                 status=CHECK_WARNING,
                 detail=f"Config keys not declared by the connector: {', '.join(unknown)}",
-                required=False,
                 evidence={**evidence, "undeclared_keys": unknown},
             )
         return CheckResult(
@@ -263,6 +271,7 @@ class SourceVerifier:
             context.base_url,
             check_dns=True,
             allow_private_networks=self.settings.http_allow_private_networks,
+            allowed_ports=self.settings.allowed_ports,
         )
         if not check.ok:
             return CheckResult(
@@ -275,7 +284,6 @@ class SourceVerifier:
             name="url",
             status=CHECK_PASSED,
             detail="Host resolves and passes the SSRF policy",
-            required=False,
             evidence={"url": context.base_url, "resolves_to": list(check.resolved_ips or ())},
         )
 
@@ -315,6 +323,42 @@ class SourceVerifier:
             )
         return targets, None
 
+    def _check_targets(
+        self, context: SourceContext, targets: list[DiscoveryTarget]
+    ) -> CheckResult:
+        """Discovery produced URLs, so the configured paths mean something.
+
+        This is deliberately not "the site is up": it proves only that the
+        connector knows where to look. Whether those URLs answer is the ``access``
+        check's job, and whether they yield records is ``parse``'s and ``parser``'s.
+        """
+        urls = [target.url for target in targets]
+        kinds = sorted({str(target.kind) for target in targets})
+        offsite = [url for url in urls if not _same_host(url, context.base_url)]
+        evidence = {
+            "targets": len(urls),
+            "kinds": kinds,
+            "sample": urls[:3],
+            "off_site": offsite[:3],
+        }
+        if offsite:
+            return CheckResult(
+                name="listing",
+                status=CHECK_WARNING,
+                detail=(
+                    f"{len(offsite)} of {len(urls)} discovered URL(s) point at another host. "
+                    "Confirm they are genuinely part of this source and not a third-party "
+                    "aggregator before ingesting them."
+                ),
+                evidence=evidence,
+            )
+        return CheckResult(
+            name="listing",
+            status=CHECK_PASSED,
+            detail=f"{len(urls)} listing URL(s) discovered ({', '.join(kinds)})",
+            evidence=evidence,
+        )
+
     async def _check_access(
         self,
         connector: ProcurementConnector | None,
@@ -328,19 +372,48 @@ class SourceVerifier:
                     name="access",
                     status=CHECK_SKIPPED,
                     detail="Connector could not be built; nothing to fetch.",
-                    required=False,
                 ),
                 None,
             )
         try:
             response = await connector.fetch(context, target)
         except TenderBaseError as exc:
+            # A 401/403 usually arrives as a raised PermanentFetchError rather
+            # than a response object, so the "we do not bypass authentication"
+            # wording has to be reconstructed here — otherwise the most important
+            # finding a source can produce reads like a generic network error.
+            details = exc.details or {}
+            status_code = details.get("status_code") or details.get("status")
+            if status_code in (401, 403):
+                return (
+                    CheckResult(
+                        name="access",
+                        status=CHECK_FAILED,
+                        detail=(
+                            f"HTTP {status_code}: the content is access-controlled. TenderBase "
+                            "does not bypass authentication, so this source cannot be ingested "
+                            "as configured; it needs a publicly accessible listing."
+                        ),
+                        evidence={"url": target.url, "http_status": status_code},
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    ),
+                    None,
+                )
             return (
                 CheckResult(
                     name="access",
                     status=CHECK_FAILED,
                     detail=f"Fetch failed with {exc.code}: {exc.message}"[:1000],
-                    evidence={"url": target.url},
+                    evidence={
+                        "url": target.url,
+                        "error_code": exc.code,
+                        "http_status": status_code,
+                        # A 429/5xx is transient: say so, so the operator re-runs
+                        # tomorrow instead of rewriting the connector.
+                        "transient": (
+                            status_code in RETRYABLE_STATUS or exc.code == "FETCH_RETRYABLE"
+                        ),
+                    },
                     duration_ms=int((time.perf_counter() - started) * 1000),
                 ),
                 None,
@@ -392,7 +465,6 @@ class SourceVerifier:
                     name="access",
                     status=CHECK_WARNING,
                     detail=f"HTTP {status_code} — the source may be temporarily unhealthy.",
-                    required=False,
                     evidence={"url": target.url, "http_status": status_code},
                     duration_ms=elapsed,
                 ),
@@ -442,7 +514,7 @@ class SourceVerifier:
         except Exception as exc:  # noqa: BLE001
             checks.append(
                 CheckResult(
-                    name="listing",
+                    name="parse",
                     status=CHECK_FAILED,
                     detail=f"Parsing raised {type(exc).__name__}: {exc}"[:1000],
                     duration_ms=int((time.perf_counter() - started) * 1000),
@@ -452,7 +524,7 @@ class SourceVerifier:
         usable = [item for item in items if await connector.validate(context, item)]
         checks.append(
             CheckResult(
-                name="listing",
+                name="parse",
                 status=CHECK_PASSED if usable else CHECK_FAILED,
                 detail=(
                     f"{len(usable)} usable item(s) parsed from {len(items)} raw row(s)"
@@ -516,7 +588,6 @@ class SourceVerifier:
                     "robots.txt is explicitly ignored for this source;"
                     " require written permission."
                 ),
-                required=False,
                 evidence={"robots_policy": "IGNORE"},
             )
         # The fetcher enforces robots on every request (it is what actually
@@ -528,7 +599,6 @@ class SourceVerifier:
                 "robots.txt is respected by the fetcher; disallowed paths abort verification "
                 "with ROBOTS_DISALLOWED rather than being retried."
             ),
-            required=False,
             evidence={"robots_policy": context.robots_policy, "targets": len(targets)},
         )
 
@@ -554,7 +624,6 @@ class SourceVerifier:
                     name="detail",
                     status=CHECK_SKIPPED,
                     detail="This connector does not follow separate detail pages.",
-                    required=False,
                     evidence={"sampled_items": len(items)},
                     duration_ms=int((time.perf_counter() - started) * 1000),
                 )
@@ -588,7 +657,6 @@ class SourceVerifier:
                 name="detail",
                 status=status,
                 detail=f"{parsed}/{len(candidates)} detail page(s) fetched and non-empty",
-                required=False,
                 evidence={"http_statuses": statuses, "fetched": fetched},
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
@@ -613,7 +681,6 @@ class SourceVerifier:
                     name="documents",
                     status=CHECK_WARNING,
                     detail="No document links were discovered on the sampled items.",
-                    required=False,
                     evidence={"sampled_items": len(items)},
                 )
             )
@@ -623,7 +690,6 @@ class SourceVerifier:
                 name="documents",
                 status=CHECK_PASSED,
                 detail=f"{len(links)} document link(s) discovered on sampled items",
-                required=False,
                 evidence={"sample": links[:5], "total": len(links)},
             )
         )
@@ -651,7 +717,6 @@ class SourceVerifier:
                     name="pagination",
                     status=CHECK_PASSED,
                     detail=f"{distinct} distinct listing page(s) will be fetched",
-                    required=False,
                     evidence={"pages": distinct, "first": urls[0], "last": urls[-1]},
                 )
             )
@@ -665,7 +730,6 @@ class SourceVerifier:
                         "Pagination is configured but only one listing URL was produced; "
                         "records beyond page 1 will not be collected."
                     ),
-                    required=False,
                     evidence={"pagination": pagination, "urls": urls},
                 )
             )
@@ -675,7 +739,6 @@ class SourceVerifier:
                 name="pagination",
                 status=CHECK_SKIPPED,
                 detail="Single-page source: no pagination configured or needed.",
-                required=False,
                 evidence={"pages": len(urls)},
             )
         )

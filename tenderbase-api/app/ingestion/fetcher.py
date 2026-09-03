@@ -195,7 +195,11 @@ class HTTPFetcher:
         policy = policy or FetchPolicy()
         cfg = self.settings
 
-        check = validate_url(url, allow_private_networks=cfg.http_allow_private_networks)
+        check = validate_url(
+            url,
+            allow_private_networks=cfg.http_allow_private_networks,
+            allowed_ports=cfg.allowed_ports,
+        )
         if not check.ok:
             raise UnsafeURLError(f"Rejected URL: {check.reason}", details={"url": url})
         safe_url = check.url
@@ -297,6 +301,7 @@ class HTTPFetcher:
             final_check = validate_url(
                 str(response.url),
                 allow_private_networks=self.settings.http_allow_private_networks,
+                allowed_ports=self.settings.allowed_ports,
             )
             if not final_check.ok:
                 raise UnsafeURLError(
@@ -360,7 +365,11 @@ class HTTPFetcher:
 
         Returns response metadata; the caller hashes and stores the bytes.
         """
-        check = validate_url(url, allow_private_networks=self.settings.http_allow_private_networks)
+        check = validate_url(
+            url,
+            allow_private_networks=self.settings.http_allow_private_networks,
+            allowed_ports=self.settings.allowed_ports,
+        )
         if not check.ok:
             raise UnsafeURLError(f"Rejected URL: {check.reason}", details={"url": url})
 
@@ -376,7 +385,15 @@ class HTTPFetcher:
         response = await self.client.send(request, stream=True)
         try:
             if response.status_code >= 400:
-                raise PermanentFetchError(
+                # Same classification as the listing path: a 503 while downloading
+                # a tender PDF is the source being flaky, not the document being
+                # gone, and calling it permanent forfeits the retry.
+                error_type = (
+                    RetryableFetchError
+                    if response.status_code in RETRYABLE_STATUS
+                    else PermanentFetchError
+                )
+                raise error_type(
                     f"HTTP {response.status_code}",
                     details={"url": check.url, "status": response.status_code},
                 )

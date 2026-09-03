@@ -91,12 +91,23 @@ class MunicipalitySource(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "verification_status IN ('UNVERIFIED','PASSED','PASSED_WITH_WARNINGS','FAILED')",
             name="verification_status_known",
         ),
-        # A source may only be ACTIVE if some verification has been recorded.
-        # This is the schema-level enforcement of the "never claim unverified
-        # works" policy: DISCOVERED/PENDING sources can be scheduled only by
-        # explicitly setting them ACTIVE *after* verification.
+        # A *passed* verification must carry the timestamp of the run that
+        # established it, so "PASSED" in an API response can always be dated and
+        # re-checked. Both passing statuses are covered: an earlier version of
+        # this constraint named only PASSED, which let a source be verified with
+        # warnings and carry no date at all — and it pointed at ``verified_at``
+        # (the human confirmation stamp), so recording a passing automated run
+        # was an INSERT-time violation.
+        #
+        # Deliberately absent: a constraint tying ``lifecycle_status='ACTIVE'`` to
+        # a passing verification. Re-verifying an active source that has since
+        # broken must be able to record ``FAILED``; a cross-column CHECK would
+        # reject that write and hide the only evidence that matters. The
+        # application refuses *activation* without a pass instead
+        # (``SourceVerificationService.set_lifecycle``).
         CheckConstraint(
-            "verification_status <> 'PASSED' OR verified_at IS NOT NULL",
+            "verification_status NOT IN ('PASSED', 'PASSED_WITH_WARNINGS') "
+            "OR verification_at IS NOT NULL",
             name="passed_verification_is_dated",
         ),
     )
