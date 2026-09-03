@@ -28,6 +28,9 @@ change in the parser cannot corrupt what is already stored.
                                                                        └─▶ text extraction ─▶ OCR?
                                                                                     │
       services ──▶ Pydantic schemas ──▶ FastAPI routes ◀── search backend ◀─────────┘
+                                          ▲
+                                          │ api_access: scope check, then rate-limit budget
+                                          │ (health probes and the OpenAPI document sit outside it)
 ```
 
 ## Layer rules
@@ -51,8 +54,9 @@ change in the parser cannot corrupt what is already stored.
 | --- | --- |
 | `app/config.py` | Pydantic-settings configuration; validates production requirements |
 | `app/logging.py` | structlog setup, request/source/job context vars, secret redaction |
-| `app/errors.py` | Error hierarchy → HTTP status + stable error code |
-| `app/enums.py` | Extensible string enums with tolerant `parse()` |
+| `app/errors.py` | Error hierarchy → HTTP status + stable error code, and the one response envelope reused by handlers and middleware |
+| `app/api/query_filters.py` | Turns Pydantic's rejection of a query filter into the API's 422 envelope (see `docs/API.md`) |
+| `app/enums.py` | Extensible string enums with tolerant `parse()`, typed as the concrete member |
 | `app/db/` | `Base`, dialect-portable column types, models, session factory |
 | `app/schemas/` | Pydantic v2 request/response contracts |
 | `app/connectors/` | `ProcurementConnector` ABC, registry, built-in adapters |
@@ -103,8 +107,12 @@ change in the parser cannot corrupt what is already stored.
 
 ## Extension points (deliberately not implemented)
 
-* **API keys / rate limiting** — `Settings.rate_limit_enabled` and the middleware hook exist; no
-  billing, quotas or subscriptions are implemented.
+* **Billing, quotas, subscriptions, user accounts** — nothing is implemented, and there are no
+  placeholder tables to unpick. What *is* implemented is the part a data API needs before it can be
+  exposed at all: API keys (`app/api/auth.py` + `app/services/api_key_service.py`; digests only,
+  scopes, immediate revocation) and rate limiting (`app/services/rate_limit.py`; Redis fixed window with
+  an in-process fallback that reports itself in `X-RateLimit-Policy`). The seam for a future billing
+  tier is one function — `policy_for(tier, settings)` — not a schema change.
 * **AI enrichment** — `AIProvider` ABC with a null implementation. Vendor adapters raise
   `NotImplementedError` rather than pretending to work.
 * **Object storage** — swap `LocalBlobStorage` for an S3 implementation behind the same ABC.

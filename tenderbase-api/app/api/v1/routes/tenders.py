@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.dependencies import MetaDep, PaginationDep, TenderServiceDep
+from app.api.query_filters import parse_query_filter
 from app.schemas.common import DataResponse, ErrorResponse, ListResponse, PaginationMeta
 from app.schemas.document import DocumentRead
 from app.schemas.event import EventRead, VersionRead
@@ -15,7 +16,9 @@ from app.schemas.tender import TenderDetail, TenderFilter, TenderRead
 
 router = APIRouter(prefix="/tenders", tags=["tenders"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Tender not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Tender not found"}
+}
 
 
 def tender_filters(
@@ -54,7 +57,8 @@ def tender_filters(
     ] = "-published_at",
 ) -> TenderFilter:
     """Build and validate the typed tender filter from query parameters."""
-    return TenderFilter(
+    return parse_query_filter(
+        TenderFilter,
         province=province,
         district=district,
         municipality=municipality,

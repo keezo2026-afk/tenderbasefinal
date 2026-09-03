@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -231,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     raise SystemExit(asyncio.run(run(build_parser().parse_args(argv))))
 
 

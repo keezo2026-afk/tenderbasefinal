@@ -41,7 +41,7 @@ def _request_id(request: Request) -> str | None:
     return getattr(request.state, "request_id", None)
 
 
-def _response(
+def error_response(
     *,
     status: int,
     code: str,
@@ -50,6 +50,15 @@ def _response(
     details: dict | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
+    """Build the one error envelope the API uses, for handlers *and* middleware.
+
+    Middleware cannot simply raise :class:`app.errors.TenderBaseError` and let the
+    registered handler format it: Starlette's exception handling lives inside the
+    user middleware stack, so an exception raised by ``PublicRateLimitMiddleware``
+    escapes as a 500 — a rate-limited client would be told the server broke, and
+    any monitoring keyed on 429 would miss the event entirely. Returning the
+    response here keeps the envelope identical on both paths.
+    """
     payload = ErrorResponse(
         error=ErrorDetail(code=code, message=message, request_id=request_id, details=details)
     )
@@ -73,7 +82,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _domain_error(request: Request, exc: TenderBaseError) -> JSONResponse:
         if exc.http_status >= 500:
             logger.error("api.domain_error", code=exc.code, message=exc.message)
-        return _response(
+        return error_response(
             status=exc.http_status,
             code=exc.code,
             message=exc.message,
@@ -89,7 +98,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # by dependencies that must not import the domain layer) keep their
         # status code and any headers the framework attached.
         headers = dict(getattr(exc, "headers", None) or {})
-        return _response(
+        return error_response(
             status=exc.status_code,
             code=STATUS_CODES.get(exc.status_code, "HTTP_ERROR"),
             message=str(exc.detail) if exc.detail else "Request failed",
@@ -107,7 +116,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             }
             for error in exc.errors()[:20]
         ]
-        return _response(
+        return error_response(
             status=422,
             code="VALIDATION_ERROR",
             message="Request validation failed",
@@ -119,7 +128,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
         # Never surface SQL or connection strings to clients.
         logger.exception("api.database_error", error_type=type(exc).__name__)
-        return _response(
+        return error_response(
             status=503,
             code="DATABASE_ERROR",
             message="A database error occurred. Please retry shortly.",
@@ -133,7 +142,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         details = None
         if not settings.is_production and settings.debug:
             details = {"exception": type(exc).__name__, "message": str(exc)[:500]}
-        return _response(
+        return error_response(
             status=500,
             code="INTERNAL_ERROR",
             message=message,

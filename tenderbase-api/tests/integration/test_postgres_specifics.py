@@ -49,11 +49,15 @@ pytestmark = [
 async def test_required_extensions_are_present(session):
     """``pg_trgm`` must be installed or fuzzy dedup and trigram indexes are dead."""
     rows = (
-        await session.execute(
-            text("select extname from pg_extension where extname = any(:names)"),
-            {"names": ["pg_trgm"]},
+        (
+            await session.execute(
+                text("select extname from pg_extension where extname = any(:names)"),
+                {"names": ["pg_trgm"]},
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert "pg_trgm" in rows
 
 
@@ -130,15 +134,19 @@ async def test_token_search_supports_and_or_operators(session, source, make_oppo
     await make_opportunity(reference="PG/FTS/011", title="Roof repairs for the municipal library")
 
     hits = (
-        await session.execute(
-            select(ProcurementOpportunity.reference_number).where(
-                func.to_tsvector(
-                    "english",
-                    ProcurementOpportunity.title,
-                ).op("@@")(func.to_tsquery("english", "road & resurfacing"))
+        (
+            await session.execute(
+                select(ProcurementOpportunity.reference_number).where(
+                    func.to_tsvector(
+                        "english",
+                        ProcurementOpportunity.title,
+                    ).op("@@")(func.to_tsquery("english", "road & resurfacing"))
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert list(hits) == ["PG/FTS/010"]
 
 
@@ -253,25 +261,33 @@ async def test_jsonb_stores_nested_structures_and_supports_containment(
     assert raw_type == "jsonb", f"expected JSONB for containment operators, got {raw_type}"
 
     hits = (
-        await session.execute(
-            text(
-                "select id from procurement_opportunities "
-                "where quality_issues @> cast(:probe as jsonb)"
-            ),
-            {"probe": '{"duplicate_review": {"layer": "trigram"}}'},
+        (
+            await session.execute(
+                text(
+                    "select id from procurement_opportunities "
+                    "where quality_issues @> cast(:probe as jsonb)"
+                ),
+                {"probe": '{"duplicate_review": {"layer": "trigram"}}'},
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert opportunity.id in list(hits)
     # A probe the record does not satisfy must not match.
     misses = (
-        await session.execute(
-            text(
-                "select id from procurement_opportunities "
-                "where quality_issues @> cast(:probe as jsonb)"
-            ),
-            {"probe": '{"duplicate_review": {"layer": "something_else"}}'},
+        (
+            await session.execute(
+                text(
+                    "select id from procurement_opportunities "
+                    "where quality_issues @> cast(:probe as jsonb)"
+                ),
+                {"probe": '{"duplicate_review": {"layer": "something_else"}}'},
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert list(misses) == []
 
 
@@ -356,9 +372,9 @@ async def test_timestamps_are_timezone_aware_utc(session, make_opportunity):
         await session.execute(
             text(
                 "select created_at, "
-            "       created_at at time zone 'Africa/Johannesburg' as local_wall_clock, "
-            "       extract(epoch from created_at)::float8 as epoch "
-            "from procurement_opportunities where id = :id"
+                "       created_at at time zone 'Africa/Johannesburg' as local_wall_clock, "
+                "       extract(epoch from created_at)::float8 as epoch "
+                "from procurement_opportunities where id = :id"
             ),
             {"id": str(opportunity.id)},
         )
@@ -410,9 +426,7 @@ async def test_cascade_removes_runs_and_documents(session, source, make_opportun
 
     await session.delete(opportunity)
     await session.commit()
-    remaining = (
-        await session.execute(select(func.count()).select_from(Document))
-    ).scalar_one()
+    remaining = (await session.execute(select(func.count()).select_from(Document))).scalar_one()
     assert remaining == 0
 
 
@@ -460,8 +474,7 @@ async def test_open_opportunity_partial_index_exists(session):
     definition = (
         await session.execute(
             text(
-                "select indexdef from pg_indexes "
-                "where indexname = 'ix_opportunities_open_closing'"
+                "select indexdef from pg_indexes where indexname = 'ix_opportunities_open_closing'"
             )
         )
     ).scalar_one()

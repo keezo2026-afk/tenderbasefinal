@@ -101,6 +101,52 @@ therefore always possible after a parser fix.
 
 A source that has never run is `UNKNOWN`. Health is always derived from real runs.
 
+## Source verification
+
+Before a source is activated, `app/ingestion/verifier.py` answers one question with evidence: **can
+this configuration be turned into records?** "The URL returned 200" is not an answer — a portal that
+serves a friendly maintenance page, a search-results template with no rows, or a page whose links all
+point at another domain all return 200.
+
+| Check | Required | What it proves |
+| --- | --- | --- |
+| `url` | yes | DNS resolves and the SSRF policy (scheme, credentials, address ranges, **port**) accepts the URL |
+| `access` | yes | The listing URL answers with a success status |
+| `connector` | yes | The configured connector key exists, accepts the config keys given, and — for `browser.playwright` — that Playwright is actually installed |
+| `listing` | yes | The connector discovered URLs to fetch from the configured paths |
+| `parse` | yes | A fetched listing page yields structurally valid rows (`item_selector` matched something) |
+| `parser` | yes | Items normalize and validate — they are usable, not merely present |
+| `robots` | no | Our user-agent is permitted to fetch the paths we need |
+| `detail` | no | Linked detail pages are fetchable and non-empty |
+| `documents` | no | Document links were found on the sampled items |
+| `pagination` | no | A second page is reachable and the sequence terminates |
+
+Weight is a property of the check, never of its outcome: `CheckResult.required` is derived from
+`REQUIRED_CHECKS`/`OPTIONAL_CHECKS` by name, so a check cannot be blocking in one report and optional in
+another. Each check records `PASSED`/`WARNING`/`FAILED`/`SKIPPED` **plus structured evidence** (HTTP status,
+selectors that matched, counts, the failing exception's class), stored in
+`municipality_sources.verification_result`. `SKIPPED` is never counted as success.
+
+Warnings are things an operator should know but which do not make a source unusable: `robots.txt` says no
+while we are configured to ignore it, discovered links point at a different domain, a source configured
+for pagination that only ever has one page. Failures that are *not* warnings: an access-controlled page
+(401/403 — reported as "we do not bypass authentication", with `transient: false`, so it is never retried
+as if it were a network blip), a listing that yields no rows, items that fail validation.
+
+Verification never activates anything. A passing run moves `DISCOVERED`/`PENDING_VERIFICATION` to
+`VERIFIED`; `ACTIVE` requires a separate, human decision (`--activate --reason "..."`), which is
+refused outright without a passing verification. `verified_at` — the human sign-off — is never written by
+code.
+
+```bash
+python -m scripts.verify_source <id-or-slug> --no-store   # nothing persisted
+python -m scripts.verify_source --discover                # every unverified source
+python -m scripts.verify_source <id> --json               # machine-readable, for CI or a dashboard
+```
+
+In an environment with no route to the public internet, every source reports `FAILED` for the network
+checks. That is the correct output, not a bug to work around: TenderBase records what it observed.
+
 ## Running ingestion
 
 ```bash

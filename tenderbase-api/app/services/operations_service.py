@@ -248,10 +248,14 @@ class OperationsService:
 
             raise ValidationError("source_id must be a UUID", code="INVALID_ID") from exc
         source = (
-            await self.session.execute(
-                select(MunicipalitySource).where(MunicipalitySource.id == identifier)
+            (
+                await self.session.execute(
+                    select(MunicipalitySource).where(MunicipalitySource.id == identifier)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if source is None:
             raise SourceNotFoundError(details={"source_id": str(identifier)})
         return source
@@ -341,9 +345,7 @@ class OperationsService:
             return "RUNNING", "The run has not finished."
         if run.items_found == 0:
             fatal = [
-                e
-                for e in errors
-                if e.stage in (str(ErrorStage.DISCOVERY), str(ErrorStage.FETCH))
+                e for e in errors if e.stage in (str(ErrorStage.DISCOVERY), str(ErrorStage.FETCH))
             ]
             if fatal:
                 return "UNREACHABLE", f"{fatal[0].code}: {fatal[0].message}"

@@ -33,7 +33,7 @@ from app.utils.dates import utcnow
 if TYPE_CHECKING:  # pragma: no cover
     from app.config import Settings
     from app.db.models.ingestion import IngestionJob
-    from app.db.models.opportunity import SourceRun
+    from app.db.models.source import SourceRun
 
 logger = get_logger("tenderbase.workers.retry")
 

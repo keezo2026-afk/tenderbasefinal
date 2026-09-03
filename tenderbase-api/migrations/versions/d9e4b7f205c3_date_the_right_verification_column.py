@@ -41,8 +41,7 @@ depends_on: str | Sequence[str] | None = None
 
 _OLD_SQL = "verification_status <> 'PASSED' OR verified_at IS NOT NULL"
 _NEW_SQL = (
-    "verification_status NOT IN ('PASSED', 'PASSED_WITH_WARNINGS') "
-    "OR verification_at IS NOT NULL"
+    "verification_status NOT IN ('PASSED', 'PASSED_WITH_WARNINGS') OR verification_at IS NOT NULL"
 )
 
 

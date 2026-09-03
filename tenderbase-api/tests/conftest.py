@@ -84,6 +84,7 @@ from app.utils.hashing import content_hash, fingerprint  # noqa: E402
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
 @pytest.fixture(scope="session")
 def settings():
     return get_settings()
@@ -155,9 +156,7 @@ async def test_database(base_db_url: str) -> AsyncIterator[str | None]:
     finally:
         cleanup = create_async_engine(admin_url, future=True, isolation_level="AUTOCOMMIT")
         async with cleanup.connect() as connection:
-            await connection.exec_driver_sql(
-                f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)'
-            )
+            await connection.exec_driver_sql(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
         await cleanup.dispose()
 
 
@@ -408,9 +407,7 @@ def mock_fetcher() -> Callable[[dict[str, tuple[int, str, str]]], HTTPFetcher]:
             url = str(request.url)
             for pattern, (status, body, content_type) in routes.items():
                 if url == pattern or url.endswith(pattern):
-                    return httpx.Response(
-                        status, text=body, headers={"content-type": content_type}
-                    )
+                    return httpx.Response(status, text=body, headers={"content-type": content_type})
             return httpx.Response(404, text="not found", headers={"content-type": "text/plain"})
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)

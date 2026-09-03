@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import overload
 
 _WS_RE = re.compile(r"[ \t\u00a0]+")
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
@@ -42,8 +43,21 @@ def collapse_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+@overload
+def truncate(value: str, length: int, suffix: str = "…") -> str: ...
+
+
+@overload
+def truncate(value: None, length: int, suffix: str = "…") -> None: ...
+
+
 def truncate(value: str | None, length: int, suffix: str = "…") -> str | None:
-    """Truncate on a word boundary where possible."""
+    """Truncate on a word boundary where possible.
+
+    A `str` in means a `str` out (rather than `str | None`), which is what callers
+    building already-validated strings need; the optional form exists for columns that
+    may be NULL.
+    """
     if value is None or len(value) <= length:
         return value
     cut = value[:length]

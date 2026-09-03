@@ -244,8 +244,7 @@ class ResilientRateLimiter:
             # Quietly enforcing a per-process limit here would be the worst of
             # both — the client believes it is globally limited, and it is not.
             raise ServiceUnavailableError(
-                "Rate limiting requires Redis (RATE_LIMIT_FAIL_OPEN=false) and "
-                "none is reachable.",
+                "Rate limiting requires Redis (RATE_LIMIT_FAIL_OPEN=false) and none is reachable.",
                 code="RATE_LIMIT_BACKEND_UNAVAILABLE",
             )
         decision = await self.fallback.check(bucket, limit=limit, burst=burst)

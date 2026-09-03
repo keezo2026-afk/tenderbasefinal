@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from typing import overload
 from zoneinfo import ZoneInfo
 
 DEFAULT_SOURCE_TIMEZONE = "Africa/Johannesburg"
@@ -86,10 +87,22 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+@overload
+def ensure_utc(value: datetime, *, assume_timezone: str = ...) -> datetime: ...
+
+
+@overload
+def ensure_utc(value: None, *, assume_timezone: str = ...) -> None: ...
+
+
 def ensure_utc(
     value: datetime | None, *, assume_timezone: str = DEFAULT_SOURCE_TIMEZONE
 ) -> datetime | None:
-    """Return ``value`` as timezone-aware UTC, assuming a timezone when naive."""
+    """Return ``value`` as timezone-aware UTC, assuming a timezone when naive.
+
+    ``None`` in, ``None`` out — and never otherwise — so callers that hold a
+    non-optional timestamp do not have to re-narrow the result.
+    """
     if value is None:
         return None
     if value.tzinfo is None:
@@ -113,11 +126,11 @@ def _extract_date(text: str) -> date | None:
         if day > 12 >= month or month <= 12:
             return _safe_date(int(m["y"]), month, day) or _safe_date(int(m["y"]), day, month)
     if m := _DMONY_RE.search(text):
-        if (month := _MONTHS.get(m["mon"].lower())) is not None:
-            return _safe_date(int(m["y"]), month, int(m["d"]))
+        if (named_month := _MONTHS.get(m["mon"].lower())) is not None:
+            return _safe_date(int(m["y"]), named_month, int(m["d"]))
     if m := _MONDY_RE.search(text):
-        if (month := _MONTHS.get(m["mon"].lower())) is not None:
-            return _safe_date(int(m["y"]), month, int(m["d"]))
+        if (named_month := _MONTHS.get(m["mon"].lower())) is not None:
+            return _safe_date(int(m["y"]), named_month, int(m["d"]))
     return None
 
 

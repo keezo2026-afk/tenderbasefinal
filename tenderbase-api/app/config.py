@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     metrics_path: str = "/metrics"
     metrics_token: str | None = None
 
-
     # -- Database ---------------------------------------------------------
     database_url: str = "postgresql+psycopg://tenderbase:tenderbase@localhost:5432/tenderbase"
     db_pool_size: int = 10

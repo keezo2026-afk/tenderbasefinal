@@ -38,6 +38,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from app.config import Settings, get_settings
 from app.connectors.base import DiscoveryTarget, ProcurementConnector, SourceContext
@@ -153,7 +154,9 @@ class SourceVerifier:
         if targets:
             fetch_check, response = await self._check_access(connector, context, targets[0])
             checks.append(fetch_check)
-            if response is not None:
+            # The connector is part of this branch's precondition: the parser check
+            # drives it, and `targets` can only be non-empty when one was resolved.
+            if connector is not None and response is not None:
                 http_status = response.status_code
                 items = await self._check_parser(connector, context, response, checks)
 
@@ -184,14 +187,12 @@ class SourceVerifier:
         if blocking:
             status = str(VerificationStatus.FAILED)
             summary = (
-                f"{len(blocking)} required check(s) failed:"
-                f" {', '.join(c.name for c in blocking)}"
+                f"{len(blocking)} required check(s) failed: {', '.join(c.name for c in blocking)}"
             )
         elif warnings:
             status = str(VerificationStatus.PASSED_WITH_WARNINGS)
             summary = (
-                f"Verified with {len(warnings)} warning(s):"
-                f" {', '.join(c.name for c in warnings)}"
+                f"Verified with {len(warnings)} warning(s): {', '.join(c.name for c in warnings)}"
             )
         else:
             status = str(VerificationStatus.PASSED)
@@ -323,9 +324,7 @@ class SourceVerifier:
             )
         return targets, None
 
-    def _check_targets(
-        self, context: SourceContext, targets: list[DiscoveryTarget]
-    ) -> CheckResult:
+    def _check_targets(self, context: SourceContext, targets: list[DiscoveryTarget]) -> CheckResult:
         """Discovery produced URLs, so the configured paths mean something.
 
         This is deliberately not "the site is up": it proves only that the
@@ -548,8 +547,8 @@ class SourceVerifier:
                 record = normalizer.normalize(
                     item,
                     context,
-                    municipality_id=context.municipality_id,
-                    province_id=context.province_id,
+                    municipality_id=_uuid_or_none(context.municipality_id),
+                    province_id=_uuid_or_none(context.province_id),
                 )
                 validation = validator.validate(record)
                 if validation.is_persistable:
@@ -566,8 +565,7 @@ class SourceVerifier:
                     f"{accepted}/{min(len(usable), self.sample_items)} "
                     "sampled item(s) normalized and validated"
                     if accepted
-                    else
-                    "No sampled item passed validation — records would be "
+                    else "No sampled item passed validation — records would be "
                     "rejected by ingestion."
                 ),
                 evidence={
@@ -585,8 +583,7 @@ class SourceVerifier:
                 name="robots",
                 status=CHECK_WARNING,
                 detail=(
-                    "robots.txt is explicitly ignored for this source;"
-                    " require written permission."
+                    "robots.txt is explicitly ignored for this source; require written permission."
                 ),
                 evidence={"robots_policy": "IGNORE"},
             )
@@ -742,6 +739,21 @@ class SourceVerifier:
                 evidence={"pages": len(urls)},
             )
         )
+
+
+def _uuid_or_none(value: str | None) -> UUID | None:
+    """``SourceContext`` carries identifiers as strings; the normalizer wants UUIDs.
+
+    A value that is not a UUID becomes ``None`` rather than raising: the geo link is a
+    convenience for the parse sample, and losing it must not turn a verification run
+    into an error.
+    """
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _same_host(url: str, base: str) -> bool:

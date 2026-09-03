@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -89,9 +90,7 @@ async def platform_totals(session: Any) -> dict[str, Any]:
             )
         )
     ).one()
-    documents = (
-        await session.execute(select(func.count(), func.sum(Document.file_size)))
-    ).one()
+    documents = (await session.execute(select(func.count(), func.sum(Document.file_size)))).one()
     municipalities = (
         await session.execute(select(func.count()).select_from(Municipality))
     ).scalar_one()
@@ -278,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     raise SystemExit(asyncio.run(run(build_parser().parse_args(argv))))
 
 

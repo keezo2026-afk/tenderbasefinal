@@ -50,6 +50,13 @@ def _ck(name: str) -> str:
 
 
 def upgrade() -> None:
+    # Timestamp defaults are written as ``(CURRENT_TIMESTAMP)`` rather than
+    # ``now()`` on purpose: the two are equivalent on PostgreSQL, but SQLite has no
+    # ``now()`` function, so the PG spelling makes a migration-built development
+    # database refuse its first INSERT into ``api_keys``. Every other table in
+    # ``27f45e7c21d7`` already uses the portable form; this keeps the rule
+    # "portable revisions emit portable DDL" true for the whole chain.
+
     with op.batch_alter_table("municipality_sources", recreate="auto") as batch_op:
         batch_op.add_column(
             sa.Column(
@@ -68,15 +75,9 @@ def upgrade() -> None:
             )
         )
         batch_op.add_column(sa.Column("verification_result", _json_type(), nullable=True))
-        batch_op.add_column(
-            sa.Column("verification_at", sa.DateTime(timezone=True), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("verification_duration_ms", sa.Integer(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("verification_http_status", sa.Integer(), nullable=True)
-        )
+        batch_op.add_column(sa.Column("verification_at", sa.DateTime(timezone=True), nullable=True))
+        batch_op.add_column(sa.Column("verification_duration_ms", sa.Integer(), nullable=True))
+        batch_op.add_column(sa.Column("verification_http_status", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("paused_at", sa.DateTime(timezone=True), nullable=True))
         batch_op.add_column(sa.Column("paused_reason", sa.String(length=500), nullable=True))
         batch_op.create_check_constraint(
@@ -133,19 +134,23 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("(CURRENT_TIMESTAMP)"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_api_keys")),
         sa.UniqueConstraint("key_hash", name=op.f("uq_api_keys_key_hash")),
-        sa.CheckConstraint("status IN ('ACTIVE','REVOKED','EXPIRED')", name=op.f("ck_api_keys_status_known")),
-        sa.CheckConstraint("length(key_prefix) >= 6", name=op.f("ck_api_keys_key_prefix_min_length")),
+        sa.CheckConstraint(
+            "status IN ('ACTIVE','REVOKED','EXPIRED')", name=op.f("ck_api_keys_status_known")
+        ),
+        sa.CheckConstraint(
+            "length(key_prefix) >= 6", name=op.f("ck_api_keys_key_prefix_min_length")
+        ),
         sa.CheckConstraint(
             "revoked_at IS NOT NULL OR status <> 'REVOKED'",
             name=op.f("ck_api_keys_revoked_keys_are_stamped"),

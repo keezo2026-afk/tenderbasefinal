@@ -8,12 +8,14 @@ resulting schema matches the SQLAlchemy models.
 
 from __future__ import annotations
 
+import re
+import uuid
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from app.db.base import Base
 
@@ -38,7 +40,15 @@ EXPECTED_TABLES = {
     "provinces",
     "source_connectors",
     "source_runs",
+    "api_keys",
 }
+
+#: Defaults a portable revision may emit. `now()` is PostgreSQL's spelling of
+#: CURRENT_TIMESTAMP and is *not* portable — SQLite raises "unknown function" at
+#: INSERT time, which schema-shape assertions alone would never notice.
+PORTABLE_DEFAULTS = re.compile(
+    r"^(?:\(?\s*(?:CURRENT_TIMESTAMP|CURRENT_DATE|true|false|TRUE|FALSE|\d+(?:\.\d+)?)\s*\)?|'[^']*')$"
+)
 
 
 @pytest.fixture
@@ -121,5 +131,71 @@ def test_downgrade_to_base_is_clean(alembic_config):
     try:
         remaining = set(inspect(engine).get_table_names()) - {"alembic_version"}
         assert remaining == set()
+    finally:
+        engine.dispose()
+
+
+def test_portable_revisions_emit_portable_defaults(alembic_config):
+    """A migration-built SQLite database must actually accept writes.
+
+    Comparing tables and columns is not enough: a server default written in one
+    dialect's syntax (`now()`) creates a schema that looks correct and then fails
+    with `unknown function: now()` on the first INSERT. That is a development-
+    environment-breaking bug that no amount of PostgreSQL CI would show, so the
+    emitted DDL itself is checked.
+    """
+    config, url = alembic_config
+    command.upgrade(config, "head")
+
+    engine = create_engine(url)
+    try:
+        rows = (
+            engine.connect()
+            .execute(text("SELECT name, sql FROM sqlite_master WHERE type = 'table'"))
+            .all()
+        )
+        offenders: dict[str, list[str]] = {}
+        for name, ddl in rows:
+            for match in re.finditer(r"DEFAULT\s+([^,)]+)", ddl or ""):
+                # SQLite renders `DEFAULT 'ACTIVE' NOT NULL`; the nullability is
+                # not part of the expression being compared.
+                default = re.sub(r"\s+(?:NOT\s+)?NULL$", "", match.group(1).strip(), flags=re.I)
+                if not PORTABLE_DEFAULTS.match(default.strip()):
+                    offenders.setdefault(name, []).append(default)
+        assert not offenders, (
+            f"non-portable server defaults in a portable revision: {offenders}. "
+            "Use sa.text('(CURRENT_TIMESTAMP)') instead of now()."
+        )
+    finally:
+        engine.dispose()
+
+
+def test_migrated_schema_inserts_rows_with_defaults(alembic_config):
+    """Insert into a freshly migrated database and get the defaults back."""
+    config, url = alembic_config
+    command.upgrade(config, "head")
+
+    engine = create_engine(url)
+    try:
+        with engine.begin() as connection:
+            key_id = str(uuid.uuid4())
+            connection.execute(
+                text(
+                    "INSERT INTO api_keys (id, name, key_prefix, key_hash, status, scopes)"
+                    " VALUES (:id, :name, :prefix, :hash, 'ACTIVE', '[]')"
+                ),
+                {
+                    "id": key_id,
+                    "name": "migration smoke",
+                    "prefix": "tb_test_",
+                    "hash": uuid.uuid4().hex + uuid.uuid4().hex,
+                },
+            )
+            row = connection.execute(
+                text("SELECT created_at, updated_at FROM api_keys WHERE id = :id"),
+                {"id": key_id},
+            ).one()
+        assert row.created_at is not None, "created_at has no usable default"
+        assert row.updated_at is not None, "updated_at has no usable default"
     finally:
         engine.dispose()

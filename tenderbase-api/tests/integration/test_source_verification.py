@@ -101,7 +101,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("content-type", content_type)
         self.send_header("content-length", str(len(body)))
         if status in (401, 403):
-            self.send_header("www-authenticate", "Basic realm=\"tenders\"")
+            self.send_header("www-authenticate", 'Basic realm="tenders"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -302,9 +302,7 @@ async def test_pagination_is_reported_when_the_source_declares_it(make_site, set
 # --- the checks that matter most -----------------------------------------
 
 
-async def test_a_page_that_returns_200_but_yields_nothing_is_not_verified(
-    make_site, settings
-):
+async def test_a_page_that_returns_200_but_yields_nothing_is_not_verified(make_site, settings):
     """The core rule: an OK response is not evidence of a usable source.
 
     A migrated CMS that serves an empty shell answers 200 forever. Ingestion
@@ -379,9 +377,7 @@ async def test_access_controlled_source_fails_without_bypassing_it(make_site, se
     assert site.hits_for("/tenders") >= 1
 
 
-async def test_robots_disallowance_aborts_before_the_listing_is_fetched(
-    make_site, settings
-):
+async def test_robots_disallowance_aborts_before_the_listing_is_fetched(make_site, settings):
     site = make_site({"/robots.txt": (200, "text/plain", "User-agent: *\nDisallow: /tenders\n")})
     report, _ = await verify(site, settings)
 

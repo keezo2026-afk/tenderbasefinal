@@ -228,5 +228,3 @@ async def api_access(
         await session.rollback()
     request.state.principal = principal
     return principal
-
-

@@ -9,17 +9,24 @@ normalize to an explicit ``UNKNOWN``/``OTHER`` member instead of being dropped.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Self, cast
 
 
 class _Extensible(StrEnum):
-    """StrEnum with a tolerant parser used by the normalization layer."""
+    """StrEnum with a tolerant parser used by the normalization layer.
+
+    ``parse`` and ``fallback`` are annotated as :data:`~typing.Self` rather than this
+    base class: callers hold a ``DocumentFormat``, not an opaque enum, and the
+    difference shows up the moment a value is used as a dictionary key or passed to a
+    typed parameter.
+    """
 
     @classmethod
-    def fallback(cls) -> _Extensible:  # pragma: no cover - overridden
+    def fallback(cls) -> Self:  # pragma: no cover - overridden
         raise NotImplementedError
 
     @classmethod
-    def parse(cls, value: object) -> _Extensible:
+    def parse(cls, value: object) -> Self:
         """Parse a raw value, returning the fallback member when unrecognised."""
         if isinstance(value, cls):
             return value
@@ -28,7 +35,7 @@ class _Extensible(StrEnum):
         candidate = str(value).strip().upper().replace("-", "_").replace(" ", "_")
         for member in cls:
             if member.value == candidate:
-                return member
+                return cast(Self, member)
         return cls.fallback()
 
 

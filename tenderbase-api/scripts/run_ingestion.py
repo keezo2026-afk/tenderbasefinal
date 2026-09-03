@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import sys
 from uuid import UUID
 
 from sqlalchemy import select
@@ -33,7 +35,15 @@ from app.utils.dates import utcnow
 logger = get_logger("scripts.run_ingestion")
 
 
-async def run_one(source: MunicipalitySource, *, dry_run: bool) -> None:
+def _emit(payload: dict, *, as_json: bool, human: str) -> None:
+    """One line of JSON for a script, or one readable line for a terminal."""
+    if as_json:
+        print(json.dumps(payload, default=str))
+    else:
+        print(human)
+
+
+async def run_one(source: MunicipalitySource, *, dry_run: bool, as_json: bool = False) -> None:
     async with HTTPFetcher() as fetcher:
         if dry_run:
             context = SourceContext.from_model(source)
@@ -41,16 +51,36 @@ async def run_one(source: MunicipalitySource, *, dry_run: bool) -> None:
                 source.connector_key, source.connector_type, fetcher=fetcher
             )
             targets = await connector.discover(context)
-            print(f"[dry-run] {source.name}: connector={connector.key}")
-            for target in targets:
-                print(f"  would fetch: {target.url} ({target.kind})")
-            count = 0
+            preview: list[dict] = []
             async for item in connector.run(context):
-                count += 1
-                print(f"  item: {str(item.get('title'))[:100]!r} -> {item.source_url}")
-                if count >= 10:
-                    print("  … stopping after 10 items (dry run)")
+                preview.append(
+                    {
+                        "title": str(item.get("title"))[:100],
+                        "reference_number": item.get("reference_number"),
+                        "source_url": item.source_url,
+                    }
+                )
+                if len(preview) >= 10:
                     break
+            _emit(
+                {
+                    "mode": "dry-run",
+                    "source_id": str(source.id),
+                    "name": source.name,
+                    "connector": connector.key,
+                    "targets": [{"url": t.url, "kind": str(t.kind)} for t in targets],
+                    "items_preview": preview,
+                    "preview_truncated": len(preview) >= 10,
+                },
+                as_json=as_json,
+                human=(
+                    f"[dry-run] {source.name}: connector={connector.key}\n"
+                    + "\n".join(f"  would fetch: {t.url} ({t.kind})" for t in targets)
+                    + "\n"
+                    + "\n".join(f"  item: {p['title']!r} -> {p['source_url']}" for p in preview)
+                    + ("\n  … stopping after 10 items (dry run)" if len(preview) >= 10 else "")
+                ),
+            )
             return
 
         async with session_scope() as session:
@@ -66,11 +96,29 @@ async def run_one(source: MunicipalitySource, *, dry_run: bool) -> None:
             await session.flush()
             pipeline = IngestionPipeline(fetcher=fetcher)
             run = await pipeline.run_source(session, attached, job=job, commit=False)
-            print(
-                f"{attached.name}: {run.status} "
-                f"found={run.items_found} created={run.items_created} "
-                f"updated={run.items_updated} skipped={run.items_skipped} "
-                f"failed={run.items_failed} documents={run.documents_found}"
+            _emit(
+                {
+                    "mode": "run",
+                    "source_id": str(attached.id),
+                    "name": attached.name,
+                    "status": run.status,
+                    "items_found": run.items_found,
+                    "items_created": run.items_created,
+                    "items_updated": run.items_updated,
+                    "items_skipped": run.items_skipped,
+                    "items_failed": run.items_failed,
+                    "documents_found": run.documents_found,
+                    "duration_ms": run.duration_ms,
+                    "job_id": str(job.id),
+                    "error": run.error_message,
+                },
+                as_json=as_json,
+                human=(
+                    f"{attached.name}: {run.status} "
+                    f"found={run.items_found} created={run.items_created} "
+                    f"updated={run.items_updated} skipped={run.items_skipped} "
+                    f"failed={run.items_failed} documents={run.documents_found}"
+                ),
             )
 
 
@@ -107,9 +155,25 @@ async def main_async(args: argparse.Namespace) -> None:
 
     for source in sources:
         try:
-            await run_one(source, dry_run=args.dry_run)
+            await run_one(source, dry_run=args.dry_run, as_json=args.json)
         except Exception as exc:  # noqa: BLE001 - one source must not stop the batch
             logger.error("ingestion.source_failed", source=source.name, error=str(exc))
+            if args.json:
+                # A batch that ends with a clean stdout and three sources missing
+                # from it is indistinguishable from a batch where they succeeded,
+                # so the failure is reported in the same stream as the results.
+                print(
+                    json.dumps(
+                        {
+                            "mode": "dry-run" if args.dry_run else "run",
+                            "source_id": str(source.id),
+                            "name": source.name,
+                            "status": "FAILED",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                        default=str,
+                    )
+                )
 
 
 def main() -> None:
@@ -124,8 +188,13 @@ def main() -> None:
         action="store_true",
         help="Fetch and parse but persist nothing (connector development)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="One JSON object per source on stdout (for CI and dashboards)",
+    )
     args = parser.parse_args()
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     asyncio.run(main_async(args))
 
 

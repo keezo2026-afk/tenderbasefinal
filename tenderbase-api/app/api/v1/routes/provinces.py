@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query
 
@@ -12,7 +12,9 @@ from app.schemas.municipality import DistrictRead, ProvinceRead
 
 router = APIRouter(prefix="/provinces", tags=["provinces"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Province not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Province not found"}
+}
 
 
 @router.get(

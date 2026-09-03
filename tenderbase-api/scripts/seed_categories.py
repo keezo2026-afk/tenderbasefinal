@@ -7,6 +7,7 @@ external data) and is safe to seed in any environment.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 from sqlalchemy import select
 
@@ -94,7 +95,7 @@ async def seed_categories() -> int:
 
 
 def main() -> None:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     asyncio.run(seed_categories())
 
 

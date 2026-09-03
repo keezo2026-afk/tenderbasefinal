@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Float, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, erased at runtime
+    from app.db.models.opportunity import ProcurementOpportunity
 
 
 class Category(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.enums import MunicipalityType
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, erased at runtime
+    from app.db.models.source import MunicipalitySource
 
 
 class Province(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -27,6 +27,7 @@ from app.workers.queue import QUEUE_NAME, JobQueue
 
 pytestmark = pytest.mark.redis
 
+
 async def reload_row(session, model, row_id):  # noqa: ANN001, ANN201 - test helper
     """Re-read a row from the database, not from the session's identity map.
 
@@ -34,9 +35,7 @@ async def reload_row(session, model, row_id):  # noqa: ANN001, ANN201 - test hel
     different one; without ``populate_existing`` SQLAlchemy hands back the
     stale object it already loaded and the assertion below would be a lie.
     """
-    stmt = (
-        select(model).where(model.id == row_id).execution_options(populate_existing=True)
-    )
+    stmt = select(model).where(model.id == row_id).execution_options(populate_existing=True)
     return (await session.execute(stmt)).scalars().one()
 
 

@@ -4,6 +4,51 @@ Base URL: `/api/v1`  ·  Interactive docs: `/api/docs` · `/api/redoc` · Schema
 
 All responses are JSON. Every response carries `X-Request-ID`; send your own to correlate logs.
 
+## Authentication
+
+```bash
+curl -H "X-API-Key: $TENDERBASE_KEY" https://api.tenderbase.example/api/v1/tenders?status=open
+```
+
+Every endpoint under `/api/v1/` that returns data requires a valid key with the scope for that path,
+except the health probes, the documentation routes and `/openapi.json`. `Authorization: Bearer <key>`
+is accepted for clients that cannot send a custom header. Keys are issued by operators:
+
+```bash
+python -m scripts.manage_api_keys create --name "Partner X" --scopes read:tenders --expires-days 180
+
+# Scopes may be space- or comma-separated, and a preset expands to its members.
+python -m scripts.manage_api_keys create --name "Partner X" \
+    --scopes read:tenders,read:statistics --expires-days 30
+```
+
+| Scope | Unlocks |
+| --- | --- |
+| `read:tenders` | `/tenders`, `/search`, `/events`, `/municipalities` (including their documents/events sub-resources) |
+| `read:geography` | `/provinces`, `/categories` |
+| `read:documents` | `/documents` |
+| `read:sources` | `/sources`, `/operations` |
+| `read:statistics` | `/statistics` |
+| `admin` | `/api-keys` (list, mint, revoke) and every read scope |
+
+A missing/invalid/expired/revoked key is `401`; a valid key without the scope is `403` naming the scope
+it needed. Enforcement defaults to on in `production`/`staging` and cannot be disabled there
+(`API_KEY_ENFORCEMENT_ENABLED`). See `docs/SECURITY.md` for how keys are stored and revoked.
+
+### Rate limiting
+
+When `RATE_LIMIT_ENABLED=true`, every response also carries the budget:
+
+```
+X-RateLimit-Limit: 60          X-RateLimit-Remaining: 58
+X-RateLimit-Reset: 1756809300  X-RateLimit-Policy: redis
+```
+
+`X-RateLimit-Policy` is `redis`, `in-process` or `in-process (redis unavailable)` — the last one means
+limits are being enforced per replica rather than globally, so a client that needs exact quota
+behaviour should treat it as a server-side incident. Refusals are `429` with `Retry-After` in seconds
+and the same envelope as every other error.
+
 ## Envelopes
 
 **List**
@@ -36,8 +81,30 @@ All responses are JSON. Every response carries `X-Request-ID`; send your own to 
 
 | Parameter | Type | Default | Rules |
 | --- | --- | --- | --- |
-| `page` | int ≥ 1 | 1 | out of range → 422 |
-| `page_size` | int 1–200 | 25 | server-enforced maximum; larger → 422 |
+| `page` | int 1–10 000 | 1 | out of range → 422 |
+| `page_size` | int ≥ 1 | `DEFAULT_PAGE_SIZE` (25) | bounded by `MAX_PAGE_SIZE` (100); larger → 422 |
+
+`page_size` is refused rather than clamped. Silently answering a request for 80 rows with 50 makes the
+`pagination` block disagree with what the client asked for, which is worse than an error it can act on —
+the maximum is an operator setting (`MAX_PAGE_SIZE`), so a client learns the ceiling from the message.
+
+**Validation errors** name every offending parameter, whichever layer caught it:
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "One or more query parameters are invalid",
+  "request_id": "6f1e...",
+  "details": { "errors": [ { "field": "query.status",
+    "message": "Input should be 'DRAFT', 'PUBLISHED', …", "type": "enum" } ] } } }
+```
+
+`field` is the location prefix plus the parameter as the client wrote it (`query.page_size`,
+`query.published_after.date` for a value that is neither date nor datetime). A check that spans two
+parameters — `published_after` after `published_before` — has no single field to blame and reports the
+bare `query` with the rule in the message.
+
+Filter values are matched exactly and case-sensitively (`OPEN`, not `open`). In a query string `+` means
+a space, so a timezone offset must be percent-encoded: `?closing_after=2026-09-01T08:30:00%2B02:00`,
+or use `Z` for UTC.
 
 Ordering always includes a stable tiebreaker (`id`), so pages never overlap or skip rows.
 
@@ -50,11 +117,13 @@ the same envelope, with the `pagination` block describing the complete set, and 
 
 | HTTP | Code | Meaning |
 | --- | --- | --- |
+| 401 | `API_KEY_MISSING`, `API_KEY_INVALID` | No credential, or one that is not accepted. Deliberately indistinguishable |
+| 403 | `INSUFFICIENT_SCOPE`, `FORBIDDEN` | Valid key, wrong scope — `message` names the scope required. Also returned when key minting is attempted with `API_KEY_SELF_SERVICE_ENABLED=false` |
 | 404 | `NOT_FOUND`, `TENDER_NOT_FOUND`, `SOURCE_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `MUNICIPALITY_NOT_FOUND`, `PROVINCE_NOT_FOUND`, `DOCUMENT_TEXT_NOT_FOUND` | Resource does not exist |
-| 422 | `VALIDATION_ERROR` | Query/path validation failed; `details` lists each field |
-| 429 | `RATE_LIMITED` | Only when rate limiting is enabled |
+| 422 | `VALIDATION_ERROR`, `SOURCE_NOT_VERIFIED`, `REASON_REQUIRED` | Query/path validation failed (`details` lists each field), or a source lifecycle change was refused by the guard rails in `VerificationService.set_lifecycle` |
+| 429 | `RATE_LIMITED` | Only when rate limiting is enabled; `Retry-After` is set |
 | 500 | `INTERNAL_ERROR` | Unexpected failure; message is generic, details go to the logs |
-| 503 | `SERVICE_UNAVAILABLE`, `QUEUE_UNAVAILABLE` | A dependency (database, Redis) is down |
+| 503 | `SERVICE_UNAVAILABLE`, `QUEUE_UNAVAILABLE`, `RATE_LIMIT_BACKEND_UNAVAILABLE` | A dependency (database, Redis) is down; the last only with `RATE_LIMIT_FAIL_OPEN=false` |
 
 ---
 
@@ -62,9 +131,13 @@ the same envelope, with the `pagination` block describing the complete set, and 
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /health` | Overall status plus component checks; 503 when a critical dependency fails |
-| `GET /health/live` | Liveness — no I/O, always 200 while the process runs |
-| `GET /health/ready` | Readiness — verifies the database is reachable |
+| `GET /health` | Every dependency with latency. 503 only when a *required* one fails; an optional one is reported as `degraded` and keeps answering 200 |
+| `GET /health/live` | Liveness — no I/O, always 200 while the process runs. Never depends on Redis |
+| `GET /health/ready` | Readiness — the database must answer. Redis is required only when `RATE_LIMIT_FAIL_OPEN=false` |
+| `GET /metrics` | Prometheus text exposition. Not in this schema; optionally gated on `METRICS_TOKEN` |
+
+Each probe is also mounted at the application root (`/health`, `/health/live`, `/health/ready`) for
+orchestrators and the container `HEALTHCHECK` that should not have to know the API version.
 
 ---
 
@@ -160,7 +233,39 @@ changes. `meta.extra` reports `query`, `search_backend` and `took_ms`.
 | `GET /sources/{source_id}/runs` | Execution history, newest first, with per-run counters |
 
 Health is reported, never invented: a source that has not run yet is `UNKNOWN` with
-`last_success_at: null`.
+`last_success_at: null`. `GET /sources/{id}` also exposes `verification_status`, `verification_at`
+(automated, evidence-backed) and `verified_at` (a human signed it off) — two columns because those are
+two different facts, and `verified_at` is never set by code.
+
+`GET /sources/connectors` reports `production_ready` and `status_note` straight from the connector
+registry, so a connector that needs Playwright, or one whose upstream contract has not been verified,
+says so instead of looking implementable.
+
+### Operations
+
+Operator-facing reads (scope `read:sources`) over the same tables the API is built on — no side effects:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /operations/sources/{id}/report` | One run in full: counters, per-stage timings, errors |
+| `GET /operations/sources/{id}/history` | Recent runs with outcomes |
+| `GET /operations/sources/{id}/verification` | The stored verification report: every check, its status and its evidence |
+| `GET /operations/runs/failed` | Runs across all sources that failed, newest first |
+| `GET /operations/sources/unhealthy` | `DEGRADED`/`FAILING`/`OFFLINE` sources with consecutive-failure counts |
+| `GET /operations/duplicates/review` | Probable matches held for human review — never auto-merged |
+
+### API keys
+
+Requires `admin`, and `POST` requires `API_KEY_SELF_SERVICE_ENABLED=true` (default false: minting keys
+is an audited operator action via `scripts/manage_api_keys.py`).
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api-keys` | Keys with prefix, name, scopes, status and expiry. The secret is never listed |
+| `POST /api-keys` | Mint a key. The response is the only place the raw value appears, and it is sent with `Cache-Control: no-store` |
+| `GET /api-keys/{key_id}` | One key |
+| `POST /api-keys/{key_id}/revoke` | Revoke now, with an optional `reason`; takes effect on the next request |
+| `GET /api-keys/summary` | `active` / `revoked` / `expired` counts, for a dashboard
 
 ---
 

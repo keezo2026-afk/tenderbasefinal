@@ -67,7 +67,6 @@ def include_object(object_, name, type_, reflected, compare_to) -> bool:  # noqa
     return True
 
 
-
 def run_migrations_offline() -> None:
     """Emit SQL to stdout without connecting to a database."""
     context.configure(

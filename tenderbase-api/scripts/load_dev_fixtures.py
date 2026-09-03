@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from datetime import timedelta
 
 from sqlalchemy import delete, select
@@ -224,7 +225,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Load development fixtures")
     parser.add_argument("--purge", action="store_true", help="Delete all fixture records")
     args = parser.parse_args()
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     asyncio.run(purge() if args.purge else load())
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Path, Query
@@ -13,7 +13,9 @@ from app.schemas.document import DocumentRead, DocumentTextRead, DocumentVersion
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Document not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Document not found"}
+}
 
 
 @router.get(

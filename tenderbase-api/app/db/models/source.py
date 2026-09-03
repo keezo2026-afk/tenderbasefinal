@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -34,6 +35,9 @@ from app.enums import (
     SourceType,
     VerificationStatus,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, erased at runtime
+    from app.db.models.geography import Municipality, Province
 
 
 class SourceConnector(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -61,7 +65,6 @@ class SourceConnector(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     #: Operator-visible caveat, e.g. "live endpoint contract UNVERIFIED".
     status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
 
 
 class MunicipalitySource(UUIDPrimaryKeyMixin, TimestampMixin, Base):

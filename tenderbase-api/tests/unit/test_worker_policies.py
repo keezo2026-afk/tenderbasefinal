@@ -82,9 +82,7 @@ def test_transient_failure_is_deferred_with_backoff():
     from app.workers.retry import decide_retry
 
     settings = Settings(app_env="test", worker_max_tries=4, worker_retry_backoff_seconds=7.0)
-    decision = decide_retry(
-        run_with(FETCH_FAILED), job_try=2, settings=settings
-    )
+    decision = decide_retry(run_with(FETCH_FAILED), job_try=2, settings=settings)
     assert decision.retry is True
     assert decision.reason == "transient_failure"
     # Attempt 2 of 4 -> the second slot of the curve, before jitter: 14s.
@@ -150,9 +148,7 @@ def test_a_failure_with_no_recorded_error_still_gets_one_try():
     from app.workers.retry import decide_retry
 
     run = SimpleNamespace(id="r", source_id="s", stats=None, error_message="upstream said no")
-    decision = decide_retry(
-        run, job_try=1, settings=Settings(app_env="test", worker_max_tries=2)
-    )
+    decision = decide_retry(run, job_try=1, settings=Settings(app_env="test", worker_max_tries=2))
     assert decision.retry is True
 
 

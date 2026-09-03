@@ -14,7 +14,7 @@ ingestion needs.
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import Connection, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -49,8 +49,7 @@ async def data_volume_gauges(session: AsyncSession) -> dict[str, object]:
                 select(
                     MunicipalitySource.health_status,
                     func.max(MunicipalitySource.consecutive_failures),
-                )
-                .group_by(MunicipalitySource.health_status)
+                ).group_by(MunicipalitySource.health_status)
             )
         ).all()
         values["source_failures_by_health"] = {
@@ -102,7 +101,12 @@ def database_pool_gauges(session: AsyncSession) -> dict[str, int]:
     zeros that would look like an idle pool.
     """
     try:
-        pool = session.sync_session.get_bind().pool
+        # A session bound to an explicit Connection (test fixtures, a nested
+        # transaction) exposes no pool of its own; its engine does. Without this the
+        # gauges silently disappear whenever a Connection is in play.
+        bind = session.sync_session.get_bind()
+        engine = bind.engine if isinstance(bind, Connection) else bind
+        pool = engine.pool
     except Exception:  # noqa: BLE001 - metrics must never break a scrape
         return {}
     gauges: dict[str, int] = {}
@@ -124,16 +128,29 @@ def database_pool_gauges(session: AsyncSession) -> dict[str, int]:
 
 
 async def refresh(
-    settings: Settings | None = None, *, include_queue: bool = True
+    settings: Settings | None = None,
+    *,
+    session: AsyncSession | None = None,
+    include_queue: bool = True,
 ) -> dict[str, object]:
-    """Recompute and publish all gauges. Returns the values for callers/tests."""
+    """Recompute and publish all gauges. Returns the values for callers/tests.
+
+    ``session`` lets a caller gauge *its own* database — the metrics route passes
+    the request-scoped session, so a process that was built with explicit settings
+    (a second app instance, a test) reports on the database it serves rather than
+    whatever the process-wide default happens to point at. Without one, the
+    application's session scope is used.
+    """
+    from contextlib import nullcontext
+
     from app.db.session import session_scope
 
     values: dict[str, object] = {}
     try:
-        async with session_scope() as session:
-            values.update(await data_volume_gauges(session))
-            values["db_pool"] = database_pool_gauges(session)
+        ctx = nullcontext(session) if session is not None else session_scope()
+        async with ctx as scoped:
+            values.update(await data_volume_gauges(scoped))
+            values["db_pool"] = database_pool_gauges(scoped)
     except Exception as exc:  # noqa: BLE001 - database down => skip gauge refresh
         logger.warning("snapshot.database_unavailable", error=str(exc))
     if include_queue:

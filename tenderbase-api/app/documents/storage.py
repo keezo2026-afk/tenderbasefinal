@@ -125,6 +125,9 @@ class LocalBlobStorage(BlobStorage):
         self.root.mkdir(parents=True, exist_ok=True)
 
 
+_S3_UNAVAILABLE = "The S3 storage backend is not implemented yet."
+
+
 class S3BlobStorage(BlobStorage):  # pragma: no cover - not implemented yet
     """Planned S3/MinIO backend.
 
@@ -141,12 +144,28 @@ class S3BlobStorage(BlobStorage):  # pragma: no cover - not implemented yet
             "DOCUMENT_STORAGE_BACKEND=local, or implement S3BlobStorage."
         )
 
-    def write_bytes(self, key: str, data: bytes) -> StoredObject: ...
-    def open_write(self, key: str) -> BinaryIO: ...
-    def read_bytes(self, key: str) -> bytes: ...
-    def exists(self, key: str) -> bool: ...
-    def delete(self, key: str) -> None: ...
-    def size(self, key: str) -> int: ...
+    # Bodies, not signature stubs: a stub returns None, which satisfies a `bool` or
+    # `int` annotation at a glance and silently corrupts whatever reads it. Only a
+    # raised error makes an unimplemented backend impossible to mistake for a working
+    # one. (`__init__` already refuses, so these guard a future subclass that forgets
+    # a method.)
+    def write_bytes(self, key: str, data: bytes) -> StoredObject:
+        raise NotImplementedError(_S3_UNAVAILABLE)
+
+    def open_write(self, key: str) -> BinaryIO:
+        raise NotImplementedError(_S3_UNAVAILABLE)
+
+    def read_bytes(self, key: str) -> bytes:
+        raise NotImplementedError(_S3_UNAVAILABLE)
+
+    def exists(self, key: str) -> bool:
+        raise NotImplementedError(_S3_UNAVAILABLE)
+
+    def delete(self, key: str) -> None:
+        raise NotImplementedError(_S3_UNAVAILABLE)
+
+    def size(self, key: str) -> int:
+        raise NotImplementedError(_S3_UNAVAILABLE)
 
 
 def get_document_storage(settings: Settings | None = None) -> BlobStorage:

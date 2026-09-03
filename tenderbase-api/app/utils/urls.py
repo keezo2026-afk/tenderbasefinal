@@ -116,7 +116,9 @@ def resolve_host(host: str) -> tuple[str, ...]:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError):
         return ()
-    return tuple({info[4][0] for info in infos})
+    # getaddrinfo's address tuple is heterogeneous as far as the type system goes;
+    # for the TCP query above the first element is always the address string.
+    return tuple({str(info[4][0]) for info in infos})
 
 
 def validate_url(

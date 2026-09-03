@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -22,6 +23,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.enums import DataQuality, EventType, OpportunityStatus, ProcurementType
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, erased at runtime
+    from app.db.models.category import OpportunityCategory
+    from app.db.models.document import Document
+    from app.db.models.geography import Municipality, Province
+    from app.db.models.source import MunicipalitySource
 
 
 class Contact(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.dependencies import MetaDep, MunicipalityServiceDep, PaginationDep, TenderServiceDep
+from app.api.query_filters import parse_query_filter
 from app.api.v1.routes.tenders import TenderFilterDep
 from app.schemas.common import DataResponse, ErrorResponse, ListResponse, PaginationMeta
 from app.schemas.municipality import MunicipalityFilter, MunicipalityRead
@@ -14,7 +15,9 @@ from app.schemas.tender import TenderRead
 
 router = APIRouter(prefix="/municipalities", tags=["municipalities"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Municipality not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Municipality not found"}
+}
 
 
 def municipality_filters(
@@ -25,7 +28,7 @@ def municipality_filters(
     q: Annotated[str | None, Query(max_length=200, description="Name contains")] = None,
     active: Annotated[bool | None, Query()] = None,
 ) -> MunicipalityFilter:
-    return MunicipalityFilter(province=province, type=type, q=q, active=active)
+    return parse_query_filter(MunicipalityFilter, province=province, type=type, q=q, active=active)
 
 
 @router.get(

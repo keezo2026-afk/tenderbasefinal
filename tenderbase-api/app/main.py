@@ -20,6 +20,7 @@ endpoint should not be advertised to the internet.
 from __future__ import annotations
 
 import hmac
+import importlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -27,6 +28,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app.api.dependencies import SessionDep
 from app.api.errors import register_exception_handlers
 from app.api.middleware import PublicRateLimitMiddleware, RequestContextMiddleware
 from app.api.v1.router import api_router
@@ -120,8 +122,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start-up and shutdown hooks."""
     settings: Settings = app.state.settings
     logger = get_logger("tenderbase.app")
-    # Importing the package registers every built-in connector.
-    import app.connectors  # noqa: F401
+    # Importing the package registers every built-in connector. Done through
+    # import_module rather than `import app.connectors` because this coroutine's
+    # parameter is also named `app`: a plain import rebinds that name to the package
+    # for the rest of the function, so every later `app.state...` would be reading
+    # the connector package instead of the application.
+    importlib.import_module("app.connectors")
     from app.connectors.registry import registered_keys
 
     # The limiter is built before serving: it probes Redis once and chooses
@@ -199,8 +205,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Declaration only — the routers attach the dependency; this makes Swagger UI
     # and ReDoc show the padlock and the per-operation scope requirement.
-    app.add_middleware(RequestContextMiddleware)
+    # Order matters, and Starlette's `add_middleware` prepends: the last call is
+    # the *outermost* layer. So the limiter goes first and request context last —
+    # a 429 issued by the limiter must still come back out through the layer that
+    # stamps `X-Request-ID`, applies the security headers and records the request
+    # in `tenderbase_http_requests_total`. Reversed, refused anonymous requests
+    # would carry no correlation id and, worse, a rate-limit storm would look like
+    # zero traffic on the dashboard you would use to notice it.
     app.add_middleware(PublicRateLimitMiddleware)
+    app.add_middleware(RequestContextMiddleware)
     if cfg.cors_origins:
         # CORS stays disabled unless an operator lists trusted origins. There is
         # no first-party browser client, so "*" with credentials would be a
@@ -264,6 +277,7 @@ def _mount_metrics(app: FastAPI, cfg: Settings) -> None:
     @app.get(cfg.metrics_path, include_in_schema=False, response_class=PlainTextResponse)
     async def metrics_endpoint(
         response: Response,
+        session: SessionDep,
         authorization: str | None = Header(default=None),
     ) -> Response:
         """Prometheus text exposition. Not part of the public OpenAPI schema."""
@@ -283,7 +297,10 @@ def _mount_metrics(app: FastAPI, cfg: Settings) -> None:
         try:
             from app.observability.snapshot import refresh
 
-            await refresh(cfg)
+            # The request's own session: gauges must describe the database this app
+            # serves, and reusing the request's connection avoids a second checkout
+            # per scrape (Prometheus scrapes are not rare).
+            await refresh(cfg, session=session)
         except Exception:  # noqa: BLE001 - a scrape must never fail on a gauge
             pass
         response.headers["Cache-Control"] = "no-store"

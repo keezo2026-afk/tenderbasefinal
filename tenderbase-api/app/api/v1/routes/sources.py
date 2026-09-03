@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.dependencies import MetaDep, PaginationDep, SourceServiceDep
+from app.api.query_filters import parse_query_filter
 from app.connectors.registry import list_connectors
 from app.schemas.common import DataResponse, ErrorResponse, ListResponse, PaginationMeta
 from app.schemas.source import (
@@ -20,7 +21,9 @@ from app.schemas.source import (
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Source not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Source not found"}
+}
 
 
 def source_filters(
@@ -36,7 +39,8 @@ def source_filters(
     active: Annotated[bool | None, Query()] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> SourceFilter:
-    return SourceFilter(
+    return parse_query_filter(
+        SourceFilter,
         source_type=source_type,
         connector_type=connector_type,
         health_status=health_status,

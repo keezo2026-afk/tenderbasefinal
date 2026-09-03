@@ -94,9 +94,7 @@ async def find_key(session: Any, identifier: str) -> ApiKey:
             return found
         raise SystemExit(f"No API key with id {identifier}")
 
-    rows = (
-        (await session.execute(select(ApiKey).where(ApiKey.name == identifier))).scalars().all()
-    )
+    rows = (await session.execute(select(ApiKey).where(ApiKey.name == identifier))).scalars().all()
     if not rows:
         raise SystemExit(f"No API key named {identifier!r}")
     if len(rows) > 1:
@@ -131,6 +129,27 @@ async def lookup_raw_key(session: Any, raw_key: str) -> ApiKey | None:
     return (
         (await session.execute(select(ApiKey).where(ApiKey.key_hash == digest))).scalars().first()
     )
+
+
+def describe_issued(issued: IssuedKey) -> dict[str, Any]:
+    """The create/rotate payload — the only output in this script with a secret.
+
+    Kept as a function so the human-readable and machine-readable paths describe
+    the same facts, and so ``key`` cannot be added to one and forgotten in the
+    other.
+    """
+    return {
+        "key": issued.raw_key,
+        "key_id": str(issued.key_id),
+        "name": issued.name,
+        "prefix": issued.prefix,
+        "scopes": list(issued.scopes),
+        "created_at": issued.created_at.isoformat() if issued.created_at else None,
+        "expires_at": issued.expires_at.isoformat() if issued.expires_at else None,
+        "warning": (
+            "Store this value now. It is kept only as a keyed digest and cannot be shown again."
+        ),
+    }
 
 
 def format_key(key: ApiKey) -> str:
@@ -179,16 +198,34 @@ async def run(args: argparse.Namespace) -> int:
                 created_by=args.created_by,
                 notes=args.notes,
             )
-            _print_new_key(issued)
+            if args.json:
+                print(json.dumps(describe_issued(issued), indent=2))
+            else:
+                _print_new_key(issued)
             return 0
 
         if args.command == "check":
             if not args.key.strip():
                 raise SystemExit(
-                    "--key is empty. Pass the full value, e.g. --key \"tb_live_...\" "
+                    '--key is empty. Pass the full value, e.g. --key "tb_live_..." '
                     "(quote it: a leading dash or shell history expansion eats key material)"
                 )
             key = await lookup_raw_key(session, args.key)
+            if args.json:
+                # Recognised-but-unusable is reported rather than flattened into a
+                # single boolean: "the digest exists but is revoked" is a different
+                # operational fact from "no such key", and CI scripts act on it.
+                print(
+                    json.dumps(
+                        {
+                            "recognised": key is not None,
+                            "valid": bool(key and key.is_valid),
+                            "key": describe(key) if key is not None else None,
+                        },
+                        indent=2,
+                    )
+                )
+                return 0 if (key is not None and key.is_valid) else 2
             if key is None:
                 print("That key is not recognised.", file=sys.stderr)
                 return 2
@@ -202,7 +239,21 @@ async def run(args: argparse.Namespace) -> int:
             key = await find_key(session, args.id)
             if args.command == "revoke":
                 await service.revoke(str(key.id), reason=args.reason)
-                print(f"Revoked {key.name} ({key.key_prefix}).")
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "revoked": True,
+                                "id": str(key.id),
+                                "name": key.name,
+                                "prefix": key.key_prefix,
+                                "reason": args.reason,
+                            },
+                            indent=2,
+                        )
+                    )
+                else:
+                    print(f"Revoked {key.name} ({key.key_prefix}).")
                 return 0
             issued = await service.create(
                 name=key.name,
@@ -212,7 +263,12 @@ async def run(args: argparse.Namespace) -> int:
                 notes=f"Rotated from {key.key_prefix}",
             )
             await service.revoke(str(key.id), reason=args.reason or "Rotated")
-            _print_new_key(issued)
+            if args.json:
+                payload = describe_issued(issued)
+                payload["replaced"] = {"id": str(key.id), "prefix": key.key_prefix}
+                print(json.dumps(payload, indent=2))
+            else:
+                _print_new_key(issued)
             return 0
 
         raise SystemExit(f"Unknown command {args.command}")
@@ -228,12 +284,17 @@ def _print_new_key(issued: IssuedKey) -> None:
     print(f"  name:       {issued.name}")
     print(f"  scopes:     {', '.join(issued.scopes)}")
     print(f"  expires_at: {issued.expires_at or 'never'}")
+    # About *this* process's configuration, which is not necessarily the API's:
+    # the script and the server read the same variables but may be run with a
+    # different environment, and a claim here that the API "does not require keys"
+    # would be exactly the sort of reassurance that is wrong under pressure.
     if get_settings().enforce_api_keys:
-        print("\n  This deployment enforces API keys: requests without one get 401.")
+        print("\n  Enforcement is on in this configuration: requests without a key get 401.")
     else:
         print(
-            "\n  Note: API_KEY_ENFORCEMENT_ENABLED is off in this environment, so the\n"
-            "  key is accepted but not required. Set it in production."
+            "\n  Note: API_KEY_ENFORCEMENT_ENABLED is off *in this shell*, so nothing here\n"
+            "  requires a key. Confirm what the API process does with:\n"
+            "    curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/api/v1/tenders"
         )
 
 
@@ -256,26 +317,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("stats", parents=[machine], help="Count keys by status")
 
-    create = sub.add_parser("create", help="Mint a new key")
-    create.add_argument("--name", required=True, help="Human label, e.g. \"City analytics export\"")
+    mint = argparse.ArgumentParser(add_help=False)
+    mint.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON for a script to capture — this output DOES contain the key value",
+    )
+
+    create = sub.add_parser("create", parents=[mint], help="Mint a new key")
+    create.add_argument("--name", required=True, help='Human label, e.g. "City analytics export"')
     create.add_argument(
         "--scopes",
         nargs="*",
         default=None,
-        help=f"Scope names or a preset. Allowed: {', '.join(API_KEY_SCOPES)}",
+        help=(
+            "Scope names or a preset, space- or comma-separated. "
+            f"Allowed: {', '.join(API_KEY_SCOPES)}"
+        ),
     )
     create.add_argument("--expires-days", type=int, default=None, help="Omit for no expiry")
     create.add_argument("--created-by", default=None, help="Who asked for it (audit trail)")
     create.add_argument("--notes", default=None)
 
-    check = sub.add_parser("check", help="Test a key value against the database")
+    check = sub.add_parser("check", parents=[machine], help="Test a key value against the database")
     check.add_argument("--key", required=True)
 
-    revoke = sub.add_parser("revoke", help="Revoke a key immediately")
+    revoke = sub.add_parser("revoke", parents=[machine], help="Revoke a key immediately")
     revoke.add_argument("--id", required=True, help="Key id, or its exact name")
     revoke.add_argument("--reason", default=None)
 
-    rotate = sub.add_parser("rotate", help="Issue a replacement and revoke the old one")
+    rotate = sub.add_parser(
+        "rotate", parents=[mint], help="Issue a replacement and revoke the old one"
+    )
     rotate.add_argument("--id", required=True)
     rotate.add_argument("--expires-days", type=int, default=None)
     rotate.add_argument("--created-by", default=None)
@@ -284,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     args = build_parser().parse_args(argv)
     try:
         raise SystemExit(asyncio.run(run(args)))

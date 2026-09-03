@@ -30,6 +30,13 @@ class TenderBaseModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True, extra="ignore")
 
 
+#: Absolute ceiling for a page, independent of configuration. The *tunable* ceiling is
+#: ``MAX_PAGE_SIZE``, applied by the pagination dependency against the application's own
+#: settings; a model here cannot read it, because field constraints are evaluated once at
+#: import — which is how ``MAX_PAGE_SIZE`` ended up a setting that the schema ignored.
+MAX_PAGE_SIZE_HARD_LIMIT = 1000
+
+
 class PaginationParams(BaseModel):
     """Deterministic offset pagination. Limits are enforced server-side."""
 
@@ -40,8 +47,11 @@ class PaginationParams(BaseModel):
         int,
         Field(
             ge=1,
-            le=_settings.max_page_size,
-            description=f"Items per page (max {_settings.max_page_size})",
+            le=MAX_PAGE_SIZE_HARD_LIMIT,
+            description=(
+                "Items per page, bounded by MAX_PAGE_SIZE (the API refuses anything larger "
+                "rather than silently returning a shorter page)"
+            ),
         ),
     ] = _settings.default_page_size
 

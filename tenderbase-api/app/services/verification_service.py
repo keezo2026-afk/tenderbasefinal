@@ -194,14 +194,17 @@ class SourceVerificationService:
                     code="SOURCE_NOT_VERIFIED",
                     details={"verification_status": source.verification_status},
                 )
-        if target is SourceLifecycle.PAUSED and not (reason or "").strip():
+        # Read once: the guard below and the assignment must agree on the same value
+        # rather than each re-deriving "is there a reason" from a nullable argument.
+        pause_reason = (reason or "").strip()
+        if target is SourceLifecycle.PAUSED and not pause_reason:
             raise ValidationError("Pausing a source requires a reason", code="REASON_REQUIRED")
 
         source.lifecycle_status = str(target)
         source.active = target.schedulable
         if target is SourceLifecycle.PAUSED:
             source.paused_at = utcnow()
-            source.paused_reason = reason[:500]
+            source.paused_reason = pause_reason[:500]
         else:
             source.paused_at = None
             source.paused_reason = None

@@ -12,7 +12,7 @@ See ``docs/PRODUCTION_RUNBOOK.md`` for the script equivalents.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
@@ -29,7 +29,9 @@ from app.services.verification_service import SourceVerificationService
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
-NOT_FOUND = {404: {"model": ErrorResponse, "description": "Source not found"}}
+NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    404: {"model": ErrorResponse, "description": "Source not found"}
+}
 
 
 def _service(session: Annotated[object, Depends]) -> OperationsService:  # pragma: no cover

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
@@ -21,6 +22,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.enums import DocumentFormat, DocumentType, ExtractionMethod
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, erased at runtime
+    from app.db.models.opportunity import ProcurementOpportunity
 
 
 class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):

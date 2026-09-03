@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -181,7 +182,7 @@ def main() -> None:
         help="Import even when a base_url fails validation (not recommended)",
     )
     args = parser.parse_args()
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     asyncio.run(import_sources(args.path, allow_unverified_urls=args.allow_unverified_urls))
 
 

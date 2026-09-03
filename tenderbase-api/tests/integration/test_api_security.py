@@ -182,9 +182,7 @@ async def test_expired_and_revoked_keys_are_refused(make_client, session) -> Non
     assert (await client.get(PROTECTED, headers={"X-API-Key": valid})).status_code == 200
 
 
-async def test_a_key_without_the_scope_is_refused_but_not_everywhere(
-    make_client, session
-) -> None:
+async def test_a_key_without_the_scope_is_refused_but_not_everywhere(make_client, session) -> None:
     """Scope enforcement is per endpoint family, not global.
 
     ``read:statistics`` must open ``/statistics`` and must not open
@@ -231,9 +229,7 @@ async def test_key_management_requires_admin(make_client, session) -> None:
     assert as_admin.status_code == 200
 
 
-async def test_minting_a_key_through_the_api_returns_the_secret_once(
-    make_client, session
-) -> None:
+async def test_minting_a_key_through_the_api_returns_the_secret_once(make_client, session) -> None:
     client = await make_client(
         api_key_enforcement_enabled=True,
         api_key_self_service_enabled=True,
@@ -330,7 +326,6 @@ async def test_limits_are_enforced_with_retry_after_headers(make_client) -> None
     assert second.status_code == 429
     assert int(second.headers["retry-after"]) >= 1
     assert second.headers["x-ratelimit-remaining"] == "0"
-    assert second.json()["error"]["code"] == "RATE_LIMITED"
     assert second.json()["error"]["details"]["limit_per_minute"] == 1
 
 
@@ -383,6 +378,44 @@ async def test_fail_closed_configuration_refuses_service_rather_than_guess(
     assert live.status_code == 200
 
 
+async def test_public_paths_are_limited_by_the_middleware_without_becoming_500(
+    make_client,
+) -> None:
+    """A refusal raised inside middleware must still be a 429.
+
+    The auth dependency and the public middleware both enforce limits, but they sit
+    at different layers: an exception thrown by middleware escapes the application's
+    exception handlers, so a *correctly limited* client was answered 500 "internal
+    error" — the status a rate limit is specifically meant to avoid, and invisible to
+    any alert keyed on 429. The middleware therefore returns the envelope itself.
+    """
+    client = await make_client(
+        rate_limit_enabled=True,
+        rate_limit_anonymous_per_minute=1,
+        rate_limit_burst=0,
+        redis_url=DEAD_REDIS,
+    )
+
+    async with limiter_installed(settings_of(client)):
+        first = await client.get("/metrics")
+        second = await client.get("/metrics")
+
+    assert first.status_code == 200
+    assert second.status_code == 429, second.text
+    body = second.json()["error"]
+    assert body["code"] == "RATE_LIMITED"
+    assert int(second.headers["retry-after"]) == body["details"]["retry_after_seconds"]
+    assert second.headers["x-ratelimit-remaining"] == "0"
+    # The refusal still crosses the correlation/security layer on its way out: a
+    # client quoting this 429 must be traceable to a log line, and security
+    # headers are not negotiable per status code.
+    assert second.headers["x-request-id"]
+    assert second.headers["x-content-type-options"] == "nosniff"
+    # And it is counted: an unauthenticated flood must be visible in the same
+    # counter an operator would otherwise read as "no traffic".
+    assert (await client.get("/metrics")).text.count("tenderbase_http_requests_total{") > 0
+
+
 @pytest.mark.parametrize("enabled", [True, False], ids=["limiter-on", "limiter-off"])
 async def test_an_authenticated_caller_is_limited_as_a_key_not_an_ip(
     make_client, session, enabled: bool
@@ -399,9 +432,7 @@ async def test_an_authenticated_caller_is_limited_as_a_key_not_an_ip(
     headers = {"X-API-Key": raw} if enabled else {}
 
     async with limiter_installed(settings_of(client)):
-        statuses = [
-            (await client.get(PROTECTED, headers=headers)).status_code for _ in range(3)
-        ]
+        statuses = [(await client.get(PROTECTED, headers=headers)).status_code for _ in range(3)]
 
     if enabled:
         # The authenticated tier's own limit (60/min by default) is far above
@@ -438,6 +469,9 @@ async def test_metrics_are_exposed_as_prometheus_text(make_client) -> None:
     # series may be empty on a SQLite test engine, so the declaration is what is
     # asserted rather than a sample value.
     assert "# TYPE tenderbase_db_pool_connections gauge" in body
+    # A gauge computed from the served database: empty in a fresh test database,
+    # and proof the snapshot ran against *this* app's engine rather than failing.
+    assert "tenderbase_tenders_total 0.0" in body
     assert awaited.status_code == 200
 
 

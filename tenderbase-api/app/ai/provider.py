@@ -69,6 +69,11 @@ class AIProvider(ABC):
 
     name: str = "abstract"
 
+    def __init__(self, settings: Settings | None = None) -> None:
+        # Declared here so that `PROVIDERS[name](settings)` type-checks for every
+        # entry, including the null provider that needs no configuration at all.
+        self._settings = settings
+
     @property
     @abstractmethod
     def available(self) -> bool:
@@ -170,7 +175,7 @@ def get_ai_provider(settings: Settings | None = None) -> AIProvider:
     if not cfg.ai_enabled:
         return NullAIProvider()
     provider_cls = PROVIDERS.get(cfg.ai_provider, NullAIProvider)
-    provider = provider_cls(cfg) if provider_cls is not NullAIProvider else NullAIProvider()
+    provider = provider_cls(cfg)
     if not provider.available:
         logger.warning("ai.provider_unavailable", provider=cfg.ai_provider)
         return NullAIProvider()

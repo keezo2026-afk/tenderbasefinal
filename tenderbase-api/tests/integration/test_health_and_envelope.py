@@ -45,6 +45,7 @@ async def test_health_probes_are_also_mounted_at_the_root(client):
     infrastructure component that cannot be configured with a prefix still
     works. Both must return the same shape.
     """
+
     def verdict(body: dict) -> tuple:
         # Timestamps and latencies obviously differ between two calls; the
         # verdict and its components must not.

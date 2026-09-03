@@ -163,12 +163,25 @@ class PublicRateLimitMiddleware(BaseHTTPMiddleware):
                 if decision is not None:
                     request.state.rate_limit = decision
                     if not decision.allowed:
-                        from app.errors import RateLimitedError
+                        # Returned, not raised: exceptions escaping user middleware
+                        # bypass the app's exception handlers and reach the client
+                        # as a 500, which would misreport a working rate limiter as
+                        # a server failure (and hide the event from 429-keyed
+                        # monitoring). Same envelope, built at the one call site.
+                        from app.api.errors import error_response
 
-                        raise RateLimitedError(
-                            "Rate limit exceeded for unauthenticated requests.",
+                        logger.info(
+                            "http.rate_limited",
+                            path=path,
+                            client=client,
+                            retry_after_seconds=decision.retry_after_seconds,
+                        )
+                        return error_response(
+                            status=429,
                             code="RATE_LIMITED",
+                            message="Rate limit exceeded for unauthenticated requests.",
+                            request_id=getattr(request.state, "request_id", None),
                             details={"retry_after_seconds": decision.retry_after_seconds},
-                            headers={"Retry-After": str(max(decision.retry_after_seconds, 1))},
+                            headers=decision.headers(),
                         )
         return await call_next(request)

@@ -36,6 +36,10 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "aiosqlite>=0.20",
+    # tests/unit/test_deployment_artifacts.py parses docker/docker-compose.yml:
+    # compose is configuration code, and the only way to catch drift in it is to
+    # read the file the way the runtime will.
+    "PyYAML>=6.0",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
@@ -50,6 +54,13 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "unit: hermetic tests with no external dependencies",
+    "integration: tests that run against a real database (SQLite by default, PostgreSQL when TEST_DATABASE_URL is set)",
+    "connectors: tests that exercise connectors against recorded fixtures",
+    "postgres: requires a reachable PostgreSQL server",
+    "redis: requires a reachable Redis server",
+]
 filterwarnings = ["ignore::DeprecationWarning"]
 addopts = "-q"
 

@@ -1,6 +1,6 @@
 """API key lifecycle: generation, hashing, verification, revocation.
 
-Design notes (see also ``docs/API_SECURITY.md``):
+Design notes (see also the API-key sections of ``docs/SECURITY.md`` and ``docs/DATABASE.md``):
 
 * Raw keys are random 256-bit tokens with a readable prefix
   (``tb_<env>_<12 hex>_<43 base64url>``). Entropy comes from
@@ -84,7 +84,11 @@ class IssuedKey:
 def generate_raw_key(environment: str = "live") -> tuple[str, str, str]:
     """Mint a key.
 
-    Returns ``(raw_key, prefix, key_hash)``. The environment label is cosmetic
+    Returns ``(raw_key, prefix, secret)`` — the hash is deliberately *not* returned
+    here, so a caller cannot log a digest by accident; :func:`hash_api_key` is the only
+    place that produces it, and it requires the pepper to be named explicitly.
+
+    The environment label is cosmetic
     (``tb_live_``/``tb_test_``) so operators can tell deployments apart when
     pasting a key into a ticket — it is not a security property.
     """
@@ -107,11 +111,19 @@ def parse_scopes(values: list[str] | str | None) -> list[str]:
     Unknown scopes are rejected rather than silently dropped: a typo in a
     grant ("read:tender") must not quietly create a key with *no* scopes that
     still looks valid to its owner.
+
+    A comma may separate scopes whether they arrive as one string or as list items —
+    ``--scopes read:tenders,read:statistics`` and ``--scopes read:tenders
+    read:statistics`` are the same grant. An operator writing the first form into a
+    CLI that only accepted the second would otherwise be told "Unknown scope",
+    because argparse has already turned their argument into a list.
     """
     if values is None:
         return list(SCOPE_PRESETS["readonly"])
     if isinstance(values, str):
-        values = [part.strip() for part in values.split(",") if part.strip()]
+        values = [values]
+    flat = [part.strip() for value in values for part in str(value).split(",")]
+    values = [part for part in flat if part]
     resolved: list[str] = []
     for value in values:
         candidate = value.strip()
@@ -214,9 +226,10 @@ class ApiKeyService:
             raise AuthenticationError("Invalid API key", code="API_KEY_INVALID")
         if key.status == str(ApiKeyStatus.REVOKED):
             raise AuthenticationError("This API key has been revoked", code="API_KEY_REVOKED")
-        if key.expires_at is not None and ensure_utc(
-            key.expires_at, assume_timezone="UTC"
-        ) <= utcnow():
+        if (
+            key.expires_at is not None
+            and ensure_utc(key.expires_at, assume_timezone="UTC") <= utcnow()
+        ):
             if key.status != str(ApiKeyStatus.EXPIRED):
                 key.status = str(ApiKeyStatus.EXPIRED)
                 await self.session.flush()

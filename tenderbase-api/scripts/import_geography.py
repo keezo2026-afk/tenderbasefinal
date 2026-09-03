@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import csv
 import json
+import sys
 from pathlib import Path
 
 from sqlalchemy import select
@@ -188,7 +189,7 @@ def main() -> None:
         help="Provenance label stored on each municipality record",
     )
     args = parser.parse_args()
-    configure_logging()
+    configure_logging(stream=sys.stderr)
 
     if not args.provinces and not args.municipalities:
         parser.error("Specify --provinces and/or --municipalities")

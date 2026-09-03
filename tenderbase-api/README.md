@@ -55,6 +55,27 @@ python -m scripts.sync_connectors
 uvicorn app.main:app --reload
 ```
 
+There is no demo data to load: the API starts empty and answers `200` with `total_items: 0`. To see
+records, either point it at a real source or load the explicitly-flagged development fixtures:
+
+```bash
+python -m scripts.load_dev_fixtures          # TEST FIXTURE data only (refuses to run in production)
+```
+
+### Point it at a real source
+
+```bash
+python -m scripts.import_sources sources.json           # validates every base_url before writing
+python -m scripts.verify_source --discover --no-store    # evidence per check, nothing persisted
+python -m scripts.verify_source <id-or-slug> --activate --reason "checked by <who>"
+python -m scripts.run_ingestion --slug <slug> --limit 1
+python -m scripts.run_report                             # fleet picture from the database
+```
+
+Verification is evidence-based (`robots.txt`, listing and detail discovery, a real parse, document
+links, rate-limit behaviour). **A `200` response is not "verified"**, and a source with no route to the
+internet from this machine will honestly report its network checks as FAILED.
+
 Background worker (needs Redis):
 
 ```bash
@@ -64,11 +85,21 @@ arq app.workers.scheduler.WorkerSettings
 ### Tests
 
 ```bash
-pytest                       # 219 tests, no network, no database server required
+pytest                       # 371 tests — no live site is ever contacted
 pytest tests/unit            # pure logic
-pytest tests/connectors      # fixture-driven connector tests
-pytest tests/integration     # API, pipeline, dedup and migration tests (SQLite)
+pytest tests/connectors      # fixture-driven connector tests (HTML/PDF/JSON samples in tests/fixtures)
+pytest tests/integration     # API, auth, pipeline, dedup, verification and migration tests
 ```
+
+The suite runs against **either** database backend: with no `TEST_DATABASE_URL` it uses SQLite; with
+one (a throwaway PostgreSQL database it creates, migrates and drops) the same tests run on the real
+engine. Both are green — **371 passed** on PostgreSQL, **340 passed + 31 skipped** on SQLite, where
+every skip is an environment capability rather than a skipped check: PostgreSQL-only behaviour
+(`pg_trgm`, `tsvector`, JSONB containment, dialect CHECK constraints) and the optional Redis/OCR
+integrations.
+Connector and ingestion tests serve pages from a local HTTP server bound to the test process — nothing
+in `pytest` reaches a real municipality. Run the API against a real database with the scripts above if
+you want to see live behaviour.
 
 ---
 
@@ -79,13 +110,19 @@ Base path `/api/v1`. Interactive docs at `/api/docs` (Swagger UI) and `/api/redo
 
 | Group | Endpoints |
 | --- | --- |
-| Health | `GET /health`, `/health/live`, `/health/ready` |
+| Health | `GET /health`, `/health/live`, `/health/ready` (also mounted at the root, unauthenticated) |
 | Tenders | `GET /tenders`, `/tenders/{id}`, `/tenders/{id}/documents`, `/tenders/{id}/events`, `/tenders/{id}/versions` |
 | Search | `GET /search` |
 | Geography | `GET /provinces`, `/provinces/districts`, `/provinces/{identifier}`, `/municipalities`, `/municipalities/{identifier}`, `/municipalities/{identifier}/tenders` |
 | Sources | `GET /sources`, `/sources/connectors`, `/sources/{id}`, `/sources/{id}/runs` |
 | Documents | `GET /documents`, `/documents/{id}`, `/documents/{id}/versions`, `/documents/{id}/text` |
 | Reference | `GET /categories`, `/events`, `/statistics` |
+| Operations | `GET /operations/sources/{id}/report`, `/history`, `/verification`, `/operations/runs/failed`, `/operations/sources/unhealthy`, `/operations/duplicates/review` |
+| API keys | `GET /api-keys`, `/api-keys/summary`, `/api-keys/{id}` · `POST /api-keys`, `/api-keys/{id}/revoke` (admin scope; minting disabled by default) |
+| Metrics | `GET /metrics` — Prometheus text, outside the OpenAPI schema, optional bearer token |
+
+Data endpoints require an `X-API-Key` (or bearer token) carrying the scope for that path whenever
+`API_KEY_ENFORCEMENT_ENABLED` is on — which is the default in production and cannot be turned off there.
 
 Every list response uses the same envelope:
 

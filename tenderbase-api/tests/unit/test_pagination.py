@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.common import PaginationMeta, PaginationParams, paginated
+from app.schemas.common import (
+    MAX_PAGE_SIZE_HARD_LIMIT,
+    PaginationMeta,
+    PaginationParams,
+    paginated,
+)
 from app.schemas.tender import SearchQuery, TenderFilter
 
 
@@ -21,7 +26,20 @@ def test_pagination_rejects_out_of_range_values():
     with pytest.raises(ValidationError):
         PaginationParams(page_size=0)
     with pytest.raises(ValidationError):
-        PaginationParams(page_size=10_000)
+        PaginationParams(page_size=MAX_PAGE_SIZE_HARD_LIMIT + 1)
+
+
+def test_the_schema_ceiling_is_not_the_configurable_one():
+    """`MAX_PAGE_SIZE` is enforced per application, so the model must not pre-empt it.
+
+    A page size above the configured maximum is perfectly valid at the schema level: the
+    API dependency is what refuses it, using the settings of the application serving the
+    request. Reading the limit off the model instead made raising `MAX_PAGE_SIZE` a no-op.
+    """
+    assert (
+        PaginationParams(page_size=MAX_PAGE_SIZE_HARD_LIMIT).page_size == MAX_PAGE_SIZE_HARD_LIMIT
+    )
+    assert PaginationParams(page_size=150).page_size == 150
 
 
 def test_pagination_meta_math():

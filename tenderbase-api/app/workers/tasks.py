@@ -106,9 +106,7 @@ async def ingest_source(ctx: dict[str, Any], source_id: str, *, job_id: str | No
             if run.status == str(JobStatus.FAILED):
                 # Failures are data at this level; convert them into a queue-level
                 # decision (backoff + jitter, or give up) before returning.
-                await defer_or_fail(
-                    ctx, run=run, job=job, settings=get_settings(), session=session
-                )
+                await defer_or_fail(ctx, run=run, job=job, settings=get_settings(), session=session)
 
             await _record_queue_attempt(ctx, job)
 

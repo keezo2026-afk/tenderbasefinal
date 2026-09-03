@@ -35,12 +35,32 @@ place names or websites.
 
 | Table | Purpose | Key columns / constraints |
 | --- | --- | --- |
-| `municipality_sources` | The source registry: one row per place data is collected from | `slug` unique; `base_url`; `source_type`; `procurement_scope`; `connector_type`, `connector_key`, JSON `config`; `active`, `priority`, `crawl_frequency_minutes`; health block (`health_status`, `last_run_at`, `last_success_at`, `last_failure_at`, `consecutive_failures`, `average_response_time_ms`, `last_http_status`); politeness (`robots_policy`, `rate_limit_per_minute`); `notes`, `verified_at` |
-| `source_connectors` | Mirror of the in-process connector registry, so the API can describe capabilities | `key`, `name`, `connector_type`, `requires_browser`, `config_schema` |
+| `municipality_sources` | The source registry: one row per place data is collected from | `slug` unique; `base_url`; `source_type`; `procurement_scope`; `connector_type`, `connector_key`, JSON `config`; `active`, `priority`, `crawl_frequency_minutes`; health block (`health_status`, `last_run_at`, `last_success_at`, `last_failure_at`, `consecutive_failures`, `average_response_time_ms`, `last_http_status`); politeness (`robots_policy`, `rate_limit_per_minute`); lifecycle (`lifecycle_status`, `paused_at`, `paused_reason`); verification (`verification_status`, `verification_at`, `verification_http_status`, `verification_result` JSON with every check's status and evidence); `notes`, `verified_at` |
+| `source_connectors` | Mirror of the in-process connector registry, so the API can describe capabilities | `key`, `name`, `connector_type`, `version`, `requires_browser`, `production_ready`, `status_note`, `config_schema`, `enabled` |
 | `source_runs` | One row per execution of a source | `status`, `started_at`, `completed_at`, `duration_ms`, `items_found/created/updated/skipped/failed`, `documents_found`, `http_status`, `error_message` |
 
+Two lifecycle/verification columns look redundant and are not. `active` is the *scheduling* switch
+(only `ACTIVE`/`DEGRADED` sources are due for a run); `lifecycle_status` is the state machine an operator
+drives (`DISCOVERED → PENDING_VERIFICATION → VERIFIED → ACTIVE → DEGRADED/PAUSED/DISABLED`). And
+`verification_at` (when the automated procedure last observed evidence) is a different fact from
+`verified_at` (when a human signed the source off) — no code ever sets the latter, which is what makes it
+usable as a signature.
+
 Check constraints keep operational values sane: `rate_limit_per_minute > 0`,
-`crawl_frequency_minutes >= 5`, `0 <= priority <= 1000`, `items_found >= 0`.
+`crawl_frequency_minutes >= 5`, `0 <= priority <= 1000`, `items_found >= 0`, and on the registry
+`lifecycle_status_known` / `verification_status_known` (the parsed-enum domains) plus
+`passed_verification_is_dated`:
+
+```sql
+verification_status NOT IN ('PASSED','PASSED_WITH_WARNINGS') OR verification_at IS NOT NULL
+```
+
+so a source cannot claim a passing verification with no recorded observation. It deliberately says
+nothing about `verified_at` — that column belongs to humans — and there is deliberately no constraint
+tying `lifecycle_status='ACTIVE'` to a passing verification, because re-verifying a broken ACTIVE source
+must be able to record `FAILED` while it stays active. Activation itself is guarded in
+`VerificationService.set_lifecycle`, which refuses `ACTIVE` without a passing verification and `PAUSED`
+without a reason.
 
 ### Opportunities (the spine)
 
@@ -96,12 +116,28 @@ publish `document.pdf` a hundred times.
 | `ingestion_jobs` | Queued/running/completed work with attempt counters (`CHECK attempt >= 0`, `CHECK max_attempts > 0`), result JSON and timing |
 | `ingestion_errors` | Per-stage failures: `stage` (`DISCOVERY`, `FETCH`, `PARSE`, `VALIDATE`, `NORMALIZE`, `PERSIST`, `DOCUMENT`, `UNKNOWN`), `error_type`, `message`, `url`, `context`, `is_retryable` |
 
+### Security
+
+| Table | Purpose | Key columns / constraints |
+| --- | --- | --- |
+| `api_keys` | Credentials for API consumers | `key_hash` unique — a keyed HMAC-SHA256 digest, never the key; `key_prefix` for recognition; `name`, `scopes` (JSON array), `status` (`ACTIVE`/`REVOKED`/`EXPIRED`), `expires_at`, `last_used_at`, `last_used_ip`, `created_by`, `notes`, `revoked_at`, `revoked_reason`; `CHECK (length(key_prefix) >= 6)` (a prefix
+shorter than that is not identifying, it is noise), `status IN ('ACTIVE','REVOKED','EXPIRED')`, and
+`revoked_keys_are_stamped` (`revoked_at IS NOT NULL OR status <> 'REVOKED'`) — a revocation that is not
+timestamped cannot be audited, so it is refused at the database rather than by convention |
+
+There is no usage counter, quota or tier column on purpose: those belong to a billing feature that this
+build does not have, and adding nullable placeholders now would mean a migration plus dead code later.
+Rate-limit policy comes from configuration (`policy_for(tier, settings)`), so changing limits requires
+no schema change.
+
 ## Migrations
 
 | Revision | Contents |
 | --- | --- |
 | `27f45e7c21d7` | Initial schema — all 17 tables, constraints and indexes; dialect-portable |
 | `b2f1c9d40a11` | PostgreSQL-only search support: `pg_trgm`, a GIN full-text index over title/reference/description and trigram indexes; a no-op on other dialects |
+| `c7a3d5e81b40` | Source lifecycle + verification columns, connector readiness flags (`production_ready`, `status_note`), and the `api_keys` table |
+| `d9e4b7f205c3` | Corrects `passed_verification_is_dated` to require `verification_at` and to cover `PASSED_WITH_WARNINGS`; batch-compatible so SQLite rebuilds the table |
 
 ```bash
 alembic upgrade head          # apply

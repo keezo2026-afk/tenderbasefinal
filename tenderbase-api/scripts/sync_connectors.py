@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 
 from sqlalchemy import select
 
@@ -83,7 +84,7 @@ async def sync_connectors(*, dry_run: bool = False) -> dict[str, int]:
 
 
 def main() -> None:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="Report the diff only")
     args = parser.parse_args()
