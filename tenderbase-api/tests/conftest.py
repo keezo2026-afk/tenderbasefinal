@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -224,18 +223,32 @@ async def client(engine) -> AsyncIterator[AsyncClient]:
 
 
 @pytest.fixture
-def make_client(engine):  # noqa: ANN201 - async context-manager factory
+async def make_client(engine, db_url):  # noqa: ANN201 - async factory, see docstring
     """Build an HTTP client bound to an app created with specific settings.
 
     ``client`` covers the default configuration. Tests that need a different one
     (authentication enabled, a dead Redis, a smaller rate limit) use this, so
     they never mutate process-global settings and leak into other tests: the
     settings object is injected through the very dependency the app resolves.
-    """
 
-    @asynccontextmanager
+    It is an async *factory* — ``client = await make_client(...)`` — rather than
+    a context manager, because a security test usually needs two apps with
+    different settings side by side (an anonymous caller and an authorised one).
+    Every client it hands out is closed on teardown, and the app's settings stay
+    reachable as ``client.app.state.settings`` so a test can mint a credential
+    with the same pepper the app will verify against.
+
+    The application's lifespan does **not** run: it owns the process-global
+    engine and limiter, which the test fixtures manage instead.
+    """
+    created: list[tuple[AsyncClient, object]] = []
+
     async def _make(**overrides):  # noqa: ANN003, ANN202
-        cfg = Settings(app_env="test", **overrides)
+        # ``database_url`` defaults to the test database because parts of the app
+        # (health probes, the metrics snapshot) talk to the engine built from the
+        # settings rather than the request-scoped session — an app under test must
+        # not fall back to the development SQLite path.
+        cfg = Settings(app_env="test", database_url=db_url, **overrides)
         application = create_app(cfg)
         factory = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
@@ -245,12 +258,21 @@ def make_client(engine):  # noqa: ANN201 - async context-manager factory
 
         application.dependency_overrides[get_session] = override_session
         application.dependency_overrides[get_settings] = lambda: cfg
-        transport = ASGITransport(app=application)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
-            yield http_client
-        application.dependency_overrides.clear()
+        http_client = AsyncClient(
+            transport=ASGITransport(app=application), base_url="http://testserver"
+        )
+        # Exposed for tests that need the app itself (asserting on the OpenAPI
+        # document, or reading the exact Settings the app was built with so a
+        # minted API key is hashed with the same pepper the app verifies with).
+        http_client.app = application  # type: ignore[attr-defined]
+        created.append((http_client, application))
+        return http_client
 
-    return _make
+    yield _make
+
+    for http_client, application in created:
+        await http_client.aclose()
+        application.dependency_overrides.clear()
 
 
 # --- Domain fixtures ------------------------------------------------------

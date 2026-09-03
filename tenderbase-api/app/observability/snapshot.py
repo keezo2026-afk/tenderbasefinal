@@ -88,6 +88,41 @@ async def queue_depth(settings: Settings | None = None) -> dict[str, int]:
         return {"queue_depth": 0, "queue_running": 0}
 
 
+def database_pool_gauges(session: AsyncSession) -> dict[str, int]:
+    """Sample the connection pool the request's engine is using.
+
+    Reported rather than derived from latency: a saturated pool shows up as slow
+    requests long before it shows up as an error, and "p99 latency" alone does not
+    say whether the cause is PostgreSQL or the API waiting for a connection.
+
+    ``overflow()`` is defined as ``checked_in + checked_out - size``, so it is
+    negative until the pool is full — clamped here because a negative gauge makes
+    a dashboard look broken. Engines without a sized pool (Static/Null, used by
+    SQLite tests) implement none of it and are reported as "no data" instead of
+    zeros that would look like an idle pool.
+    """
+    try:
+        pool = session.sync_session.get_bind().pool
+    except Exception:  # noqa: BLE001 - metrics must never break a scrape
+        return {}
+    gauges: dict[str, int] = {}
+    for state, attribute in (
+        ("size", "size"),
+        ("checked_out", "checkedout"),
+        ("checked_in", "checkedin"),
+        ("overflow", "overflow"),
+    ):
+        method = getattr(pool, attribute, None)
+        if method is None:
+            continue
+        try:
+            value = int(method())
+        except (NotImplementedError, TypeError, ValueError):  # pragma: no cover
+            continue
+        gauges[state] = max(value, 0) if state == "overflow" else value
+    return gauges
+
+
 async def refresh(
     settings: Settings | None = None, *, include_queue: bool = True
 ) -> dict[str, object]:
@@ -98,6 +133,7 @@ async def refresh(
     try:
         async with session_scope() as session:
             values.update(await data_volume_gauges(session))
+            values["db_pool"] = database_pool_gauges(session)
     except Exception as exc:  # noqa: BLE001 - database down => skip gauge refresh
         logger.warning("snapshot.database_unavailable", error=str(exc))
     if include_queue:

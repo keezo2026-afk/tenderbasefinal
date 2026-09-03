@@ -19,6 +19,7 @@ endpoint should not be advertised to the internet.
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -109,6 +110,11 @@ TAGS_METADATA = [
 ]
 
 
+def _token_matches(presented: str, expected: str) -> bool:
+    """Constant-time comparison; a metrics token is a credential."""
+    return hmac.compare_digest(presented.encode(), expected.encode())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start-up and shutdown hooks."""
@@ -125,8 +131,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             install_limiter(await build_limiter(settings))
         except Exception as exc:  # noqa: BLE001 - a bad limiter must not block the API
             logger.error("app.rate_limiter_init_failed", error=str(exc))
-
-    metrics.set_build_info(settings)
 
     await _verify_database(logger, settings)
 
@@ -187,6 +191,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         servers=[],
     )
     app.state.settings = cfg
+    # Set at build time rather than only in the lifespan, so ``tenderbase_build_info``
+    # is present for anything that imports the app without running startup (a
+    # worker, a test client, a scrape during a restart) and never renders an
+    # empty Info metric.
+    metrics.set_build_info(cfg)
 
     # Declaration only — the routers attach the dependency; this makes Swagger UI
     # and ReDoc show the padlock and the per-operation scope requirement.
@@ -260,10 +269,16 @@ def _mount_metrics(app: FastAPI, cfg: Settings) -> None:
         """Prometheus text exposition. Not part of the public OpenAPI schema."""
         if cfg.metrics_token:
             presented = (authorization or "").removeprefix("Bearer ").strip()
-            if presented != cfg.metrics_token:
+            if not _token_matches(presented, cfg.metrics_token):
+                # 401 + WWW-Authenticate, not 403: "you have not authenticated"
+                # is the truth here, and a scrape target that answers 403 makes
+                # Prometheus report a permanent configuration error instead of
+                # retrying with credentials. Both branches give the identical
+                # response so the endpoint cannot be probed for token length.
                 raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
+                    status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Metrics require the configured bearer token",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
         try:
             from app.observability.snapshot import refresh

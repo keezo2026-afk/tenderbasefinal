@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.config import Settings, get_settings
+from app.errors import ServiceUnavailableError
 from app.logging import get_logger
 
 logger = get_logger("tenderbase.rate_limit")
@@ -230,7 +231,23 @@ class ResilientRateLimiter:
             except Exception as exc:  # noqa: BLE001 - Redis outage is not fatal
                 logger.error("rate_limit.redis_unavailable", error=str(exc))
                 if not self.fail_open:
-                    raise
+                    raise ServiceUnavailableError(
+                        "Rate limiting is configured to fail closed and Redis is "
+                        "unavailable, so the request cannot be adjudicated.",
+                        code="RATE_LIMIT_BACKEND_UNAVAILABLE",
+                    ) from exc
+            # ``fail_open`` and no exception means the primary worked; reaching
+            # the fallback below is the fail-open path.
+        elif not self.fail_open:
+            # Fail-closed has to mean something even when Redis was never
+            # reachable: the limiter was built without a primary at startup.
+            # Quietly enforcing a per-process limit here would be the worst of
+            # both — the client believes it is globally limited, and it is not.
+            raise ServiceUnavailableError(
+                "Rate limiting requires Redis (RATE_LIMIT_FAIL_OPEN=false) and "
+                "none is reachable.",
+                code="RATE_LIMIT_BACKEND_UNAVAILABLE",
+            )
         decision = await self.fallback.check(bucket, limit=limit, burst=burst)
         decision.backend = "in-process (redis unavailable)"
         return decision
@@ -280,6 +297,16 @@ async def build_limiter(settings: Settings | None = None) -> ResilientRateLimite
             logger.warning("rate_limit.redis_unhealthy_using_local_fallback")
     except Exception as exc:  # noqa: BLE001 - any Redis surprise degrades, never aborts
         logger.warning("rate_limit.redis_connect_failed", error=str(exc))
+    if primary is None and not cfg.rate_limit_fail_open:
+        # Loud at startup, not mysterious at request time: this deployment has
+        # asked to reject traffic rather than enforce a weaker, per-replica limit.
+        logger.error(
+            "rate_limit.no_primary_but_fail_closed",
+            detail=(
+                "Redis is unreachable and RATE_LIMIT_FAIL_OPEN=false; every "
+                "protected request will be answered with 503 until Redis returns."
+            ),
+        )
     return ResilientRateLimiter(primary, fallback, fail_open=cfg.rate_limit_fail_open)
 
 

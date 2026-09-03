@@ -119,12 +119,19 @@ async def readiness(
 def _cache_required(settings: Settings) -> bool:
     """Is Redis something this process needs in order to serve requests correctly?
 
-    It is when rate limiting uses the Redis backend: without it, limits are
-    per-worker only and a client can exceed its contract. When rate limiting is
-    off there is nothing to lose by serving traffic without Redis, so a
-    developer running the API alone still comes up ready.
+    Only when the limiter has been told it may not degrade. With the default
+    ``RATE_LIMIT_FAIL_OPEN=true`` a Redis outage moves enforcement to the
+    in-process limiter — weaker (per replica) but functional, and
+    ``X-RateLimit-Policy`` says so on every response — so making readiness depend
+    on Redis would take the API out of rotation *because of an outage of an
+    optional component*, and a load balancer would restart a healthy process into
+    a crash loop during the incident.
+
+    With ``RATE_LIMIT_FAIL_OPEN=false`` the opposite holds: protected requests are
+    answered 503 (see :class:`ResilientRateLimiter`), so readiness has to fail or
+    it would advertise a node that refuses every data request.
     """
-    return settings.use_rate_limit
+    return settings.use_rate_limit and not settings.rate_limit_fail_open
 
 
 async def _check_cache(settings: Settings) -> HealthComponent:
@@ -145,11 +152,14 @@ async def _check_cache(settings: Settings) -> HealthComponent:
             required=required,
         )
 
-    if not required:
-        # Nothing in this process depends on Redis, so we neither probe it nor
-        # alarm anyone about it. An unnecessary probe here would also make the
-        # health endpoints depend on a service the deployment may not run.
-        return done("disabled", "not required in this configuration")
+    if not settings.use_rate_limit:
+        # Rate limiting is off, so nothing here depends on Redis at all: skip the
+        # probe rather than make the health endpoints hinge on a service the
+        # deployment may legitimately not run. When rate limiting *is* on but may
+        # degrade, the probe still runs — an operator needs to see "degraded" in
+        # the body, because a fallback limiter is a real loss of global
+        # enforcement even though it must not block traffic.
+        return done("disabled", "rate limiting is disabled")
 
     try:
         import redis.asyncio as aioredis

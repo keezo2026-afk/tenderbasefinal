@@ -25,7 +25,6 @@ requires a key when ``enforce_api_keys`` is on.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Annotated, Any
 from urllib.parse import unquote
@@ -34,11 +33,12 @@ from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, get_settings
+from app.api.context import SettingsDep
+from app.config import Settings
 from app.db.models.security import ApiKey
 from app.db.session import get_session
 from app.enums import SCOPE_REQUIREMENTS, ApiKeyScope
-from app.errors import RateLimitedError
+from app.errors import RateLimitedError, TenderBaseError
 from app.logging import get_logger
 from app.observability import metrics
 from app.services.api_key_service import ApiKeyService, AuthenticationError
@@ -53,15 +53,13 @@ api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False, scheme_name="A
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
 
-async def get_auth_session() -> AsyncIterator[AsyncSession]:
-    """Yield the request-scoped session used for authentication.
-
-    Deliberately the *same* callable as the routes' session provider, so FastAPI
-    caches one :class:`AsyncSession` per request instead of checking out a second
-    connection for authentication.
-    """
-    async for session in get_session():
-        yield session
+#: Authentication resolves its session through *exactly* the callable the routes
+#: use — an alias, not a wrapper. FastAPI caches a dependency by identity, so a
+#: wrapper function would open a second AsyncSession (a second pooled connection)
+#: for every authenticated request and quietly halve the pool under load. As an
+#: alias, one request checks out one connection, and a test that overrides
+#: ``get_session`` redirects authentication and data access together.
+get_auth_session = get_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,10 +177,10 @@ def attach_rate_headers(response_headers: dict[str, str], decision: RateDecision
 async def api_access(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_auth_session)],
+    settings: SettingsDep,
     credential: CredentialDep = None,
 ) -> Principal:
     """Authenticate + authorise + rate-limit one protected request."""
-    settings = get_settings()
     service = ApiKeyService(session, settings)
     required = required_scope_for(request.url.path)
 
@@ -201,7 +199,11 @@ async def api_access(
         )
     try:
         key = await service.verify(credential, required_scope=required)
-    except AuthenticationError as exc:
+    except TenderBaseError as exc:
+        # Every deliberate refusal — missing key, unknown key, expired, revoked
+        # (401) and insufficient scope (403) — keeps its own status and code.
+        # Catching only AuthenticationError here turned a 403 into a 503, which
+        # tells an integrator to retry a request that will never succeed.
         metrics.AUTH_REJECTIONS.labels(code=str(exc.code)).inc()
         request.state.auth_error = str(exc.code)
         raise

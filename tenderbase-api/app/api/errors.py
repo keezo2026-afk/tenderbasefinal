@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.errors import TenderBaseError
 from app.logging import get_logger
 from app.schemas.common import ErrorDetail, ErrorResponse
@@ -65,7 +65,9 @@ def _response(
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach every exception handler to the application."""
-    settings = get_settings()
+    # The app's own settings object: a test (or a second mounted app) that built
+    # its application with explicit settings must not inherit the process global.
+    settings: Settings = getattr(app.state, "settings", None) or get_settings()
 
     @app.exception_handler(TenderBaseError)
     async def _domain_error(request: Request, exc: TenderBaseError) -> JSONResponse:

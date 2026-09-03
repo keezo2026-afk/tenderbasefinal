@@ -20,8 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.api.auth import Principal, api_access
-from app.api.dependencies import MetaDep, SessionDep
-from app.config import get_settings
+from app.api.dependencies import MetaDep, SessionDep, SettingsDep
 from app.db.models.security import ApiKey
 from app.schemas.common import DataResponse, ListResponse, PaginationMeta
 from app.schemas.security import (
@@ -116,10 +115,10 @@ async def create_api_key(
     payload: ApiKeyIssueRequest,
     session: SessionDep,
     meta: MetaDep,
+    settings: SettingsDep,
     _principal: Annotated[Principal, Depends(api_access)],
     response: Response,
 ) -> DataResponse[ApiKeyCreated]:
-    settings = get_settings()
     if not settings.api_key_self_service_enabled:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -73,22 +73,43 @@ async def test_optional_cache_component_does_not_block_traffic(client):
     assert body["status"] == "healthy"
 
 
-async def test_readiness_fails_when_redis_is_load_bearing(make_client):
-    """Turn rate limiting on, point Redis at a dead port: readiness must say so.
+async def test_redis_blocks_readiness_only_when_the_limiter_cannot_degrade(make_client):
+    """Fail-open means "degrade visibly"; fail-closed means "refuse to serve".
 
-    Silent fail-open is the right behaviour for a request path, but a probe that
-    keeps answering 200 while the limiter is dead hides the outage from
-    monitoring forever.
+    Readiness has to agree with whichever the operator chose. A limiter that has
+    fallen back to in-process enforcement is still serving traffic correctly (and
+    says so in ``X-RateLimit-Policy``), so blocking readiness would pull healthy
+    nodes out of rotation — and have them restarted — during a Redis incident.
+    With ``RATE_LIMIT_FAIL_OPEN=false`` the opposite holds: protected requests are
+    answered 503, so readiness must fail or the load balancer keeps sending
+    traffic to a node that refuses it.
     """
-    async with make_client(rate_limit_enabled=True, redis_url="redis://127.0.0.1:1/0") as client:
-        ready = await client.get("/api/v1/health/ready")
-        assert ready.status_code == 503
-        cache = next(c for c in ready.json()["components"] if c["name"] == "cache")
-        assert cache["required"] is True
-        assert cache["status"] == "unhealthy"
-        # Liveness deliberately ignores dependencies: a pod whose cache is down
-        # must not be killed and restarted in a loop.
-        assert (await client.get("/api/v1/health/live")).status_code == 200
+    dead = "redis://127.0.0.1:1/0"
+
+    degrading = await make_client(rate_limit_enabled=True, redis_url=dead)
+    ready = await degrading.get("/api/v1/health/ready")
+    health = await degrading.get("/api/v1/health")
+
+    assert ready.status_code == 200
+    cache = next(c for c in ready.json()["components"] if c["name"] == "cache")
+    assert cache["required"] is False
+    # Reported as degraded rather than hidden: the outage is visible to
+    # monitoring even though it does not block traffic.
+    assert cache["status"] == "degraded"
+    assert health.json()["status"] == "degraded"
+
+    refusing = await make_client(
+        rate_limit_enabled=True, redis_url=dead, rate_limit_fail_open=False
+    )
+    blocked = await refusing.get("/api/v1/health/ready")
+
+    assert blocked.status_code == 503
+    cache = next(c for c in blocked.json()["components"] if c["name"] == "cache")
+    assert cache["required"] is True
+    assert cache["status"] == "unhealthy"
+    # Liveness deliberately ignores dependencies: a pod whose cache is down must
+    # not be killed and restarted in a loop.
+    assert (await refusing.get("/api/v1/health/live")).status_code == 200
 
 
 async def test_request_id_is_echoed_and_generated(client):

@@ -65,6 +65,14 @@ QUEUE_WORKERS = Gauge(
     "tenderbase_queue_running_jobs",
     "Ingestion jobs currently executing (ARQ running-set cardinality).",
 )
+DB_POOL_CONNECTIONS = Gauge(
+    "tenderbase_db_pool_connections",
+    "Database pool connections by state, sampled at scrape time. "
+    '``state="checked_out"`` at ``state="size"`` means requests are queueing '
+    "for a connection — the usual first symptom of a pool that is too small for "
+    "the API's concurrency.",
+    ["state"],
+)
 
 # --- Documents ------------------------------------------------------------
 
@@ -225,6 +233,8 @@ def snapshot_gauges(values: dict[str, Any]) -> None:
         QUEUE_WORKERS.set(float(values["queue_running"]))
     for status, count in (values.get("source_failures_by_health") or {}).items():
         SOURCE_CONSECUTIVE_FAILURES.labels(health_status=str(status)).set(float(count))
+    for state, count in (values.get("db_pool") or {}).items():
+        DB_POOL_CONNECTIONS.labels(state=str(state)).set(float(count))
 
 
 def render_metrics() -> bytes:
@@ -236,6 +246,7 @@ def render_metrics() -> bytes:
 
 __all__ = [
     "AUTH_REJECTIONS",
+    "DB_POOL_CONNECTIONS",
     "DOCUMENTS_PROCESSED",
     "DOCUMENT_BYTES",
     "DOCUMENT_EXTRACTION_DURATION",
