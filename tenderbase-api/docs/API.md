@@ -31,6 +31,14 @@ python -m scripts.manage_api_keys create --name "Partner X" \
 | `read:statistics` | `/statistics` |
 | `admin` | `/api-keys` (list, mint, revoke) and every read scope |
 
+This table is enforced rather than merely documented:
+`tests/integration/test_api_scope_table.py` compares it with the two in-code tables
+(`ROUTER_SCOPES`, which is the router dependency that actually gates a request, and
+`SCOPE_REQUIREMENTS`, the path fallback), checks that every documented `/api/v1` route falls under a
+family with a declared scope, and then drives real requests per family with a real key — asserting both
+that a wrong scope is refused with the right message and that the right scope is let through. A route
+added without a scope, or a scope table edited in only one place, fails that module.
+
 A missing/invalid/expired/revoked key is `401`; a valid key without the scope is `403` naming the scope
 it needed. Enforcement defaults to on in `production`/`staging` and cannot be disabled there
 (`API_KEY_ENFORCEMENT_ENABLED`). See `docs/SECURITY.md` for how keys are stored and revoked.
@@ -243,16 +251,61 @@ says so instead of looking implementable.
 
 ### Operations
 
-Operator-facing reads (scope `read:sources`) over the same tables the API is built on — no side effects:
+Operator-facing reads (scope `read:sources`) over the same tables the API is built on. They change
+nothing; `POST /operations/reconcile` is the single exception and requires `admin`:
 
 | Endpoint | Description |
 | --- | --- |
+| `GET /operations/sources/freshness` | Per-source staleness: `FRESH` / `AGING` / `STALE` / `NEVER_RUN` / `PAUSED` / `NOT_ACTIVE`, worst first, optionally filtered by `?state=` |
+| `POST /operations/reconcile` | Run the job/run/lease repair pass now (`?dry_run=true` to look first) |
 | `GET /operations/sources/{id}/report` | One run in full: counters, per-stage timings, errors |
 | `GET /operations/sources/{id}/history` | Recent runs with outcomes |
 | `GET /operations/sources/{id}/verification` | The stored verification report: every check, its status and its evidence |
 | `GET /operations/runs/failed` | Runs across all sources that failed, newest first |
 | `GET /operations/sources/unhealthy` | `DEGRADED`/`FAILING`/`OFFLINE` sources with consecutive-failure counts |
 | `GET /operations/duplicates/review` | Probable matches held for human review — never auto-merged |
+
+### `GET /operations/sources/freshness`
+
+Answers "is ingestion actually delivering, or merely running?" without a database session. Every row
+carries `source_id`, `slug`, `name`, `active`, `lifecycle_status`, `freshness_state`, `last_run_at`,
+`last_success_at`, `hours_since_success`, `next_run_at`, `claim_expires_at`, `health_status` and
+`consecutive_failures`. Ordering is by state severity first (a stale active source before a paused one),
+then by hours since last success, descending; `LIMIT` applies before filtering by `?state=`, so
+an unfiltered page and a filtered one can disagree — narrow with `limit=` if that matters.
+
+Timestamps are echoed exactly as stored, in UTC ISO-8601 (`+00:00`), and `hours_since_success` is
+computed from the row's own stored value rather than re-derived from a second clock reading.
+`PAUSED` and `NOT_ACTIVE` are reported instead of being dropped, because "we know this source is off" is
+a different fact from "this source has gone quiet on its own". Thresholds come from
+`FRESHNESS_AGING_HOURS` (36) and `FRESHNESS_STALE_HOURS` (96); `AGING` is inclusive at its threshold.
+An unknown `state` is a `422` with `details.errors[].field == "query.state"`.
+
+### `POST /operations/reconcile`
+
+The same pass the worker runs every `JOB_RECONCILIATION_INTERVAL_SECONDS`, on demand. It compares
+`ingestion_jobs` and `source_runs` against reality and repairs what a lost worker, a dropped queue or a
+failed `finally` block leaves behind: a stuck `SourceRun` is closed `FAILED` with its counters and
+duration preserved, a live job that stopped moving is re-dispatched (or failed, if
+`RECONCILE_REENQUEUE=false`) with its source's backoff advanced and its next run made due, an expired
+claim lease is cleared, and a duplicate live claim is cancelled. It never breaks a lease a worker still
+holds and never resurrects a terminally failed job.
+
+| Field | Meaning |
+| --- | --- |
+| `started_at` | When the pass began, UTC |
+| `dry_run` | Echoes the query flag; with `true` nothing was written |
+| `reenqueue_enabled` | The configured `RECONCILE_REENQUEUE` value, so a reader knows which policy produced the numbers |
+| `actions_count` | Rows changed |
+| `counts` | Per action: `requeued`, `stale_job_failed`, `source_run_closed`, `lease_expired_cleared`, `duplicate_job_cancelled` |
+| `checked` | How many rows each stage examined, including `reenqueue_unavailable` when the queue could not be reached |
+| `source_freshness` | Bucket totals, matching `GET /operations/sources/freshness` |
+| `actions` | One entry per repair: `action`, `job_id`, `source_id`, `detail` |
+
+**Idempotent by construction** — every repair moves the row out of the state that selected it, so a
+second call in a row returns `actions_count=0`. Safe to re-run, and safe to point a monitoring check at.
+The audit trail is one structured log line (`operations.reconcile`, with the acting key), because this
+is operational bookkeeping rather than tender data.
 
 ### API keys
 
